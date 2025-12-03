@@ -1,7 +1,5 @@
-use dirs;
 use gtk4::{Application, ApplicationWindow, FlowBox, gdk::Paintable, prelude::*};
 use std::{fs, path::Path, path::PathBuf};
-use taglib;
 
 fn main() {
     let app = Application::builder()
@@ -13,8 +11,8 @@ fn main() {
     app.run();
 }
 
-struct Song {
-    path: String,
+struct _Song {
+    path: PathBuf,
     title: String,
     album: String,
     album_artist: String,
@@ -24,12 +22,10 @@ pub struct Album {
     pub dir: PathBuf,
     pub title: String,
     pub artist: String,
-    pub album_art: gtk4::gdk::Paintable,
+    pub album_art: gtk4::gdk::Paintable, // apparently this doesnt work with gdk::Texture. this crate is shit
 }
 
 fn build_ui(app: &Application) {
-    let dir_music = Some("~/Music/");
-
     let rows_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
     let page_menu_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
@@ -40,7 +36,7 @@ fn build_ui(app: &Application) {
 
     let albums_grid = gtk4::FlowBox::new();
     albums_grid.set_valign(gtk4::Align::Start);
-    albums_grid.set_max_children_per_line(5); // optional
+    // albums_grid.set_max_children_per_line(10);
     albums_grid.set_selection_mode(gtk4::SelectionMode::None);
     albums_grid.set_row_spacing(10);
     albums_grid.set_column_spacing(10);
@@ -77,8 +73,6 @@ fn build_ui(app: &Application) {
 
     // top ribbon
     let ribbon = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-    // let label = gtk4::Label::new(Some("Hello"));
-    // label.set_size_request(80, 40);
 
     let ribbon_button_pause = gtk4::Button::with_label("Pause");
     ribbon_button_pause.set_size_request(40, 40);
@@ -112,6 +106,7 @@ fn build_ui(app: &Application) {
     ribbon_progress_bar.set_hexpand(true);
     ribbon_progress_bar.set_vexpand(true);
     ribbon_progress_bar.set_valign(gtk4::Align::Center);
+    // WHY DOES THIS NOT EXPHAND VERTICALLY I HATE YOU GTK
 
     let ribbon_toggle_shuffle = gtk4::Button::with_label("Shuffle");
     ribbon_toggle_shuffle.set_size_request(40, 40);
@@ -133,6 +128,7 @@ fn build_ui(app: &Application) {
     ribbon.append(&ribbon_toggle_shuffle);
     ribbon.append(&ribbon_label_progress);
     ribbon.set_vexpand(false);
+    // why am i like this
 
     //
     //
@@ -152,6 +148,8 @@ fn build_ui(app: &Application) {
     rows_container.append(&h_div);
     rows_container.append(&main_column_container);
 
+    // flowboxes are for nerds
+
     fn switch_page(page: &str, albums_grid: &gtk4::FlowBox) {
         println!("{}", page);
         if page == "albums" {
@@ -159,23 +157,24 @@ fn build_ui(app: &Application) {
                 dirs::home_dir().unwrap().join("Music").as_path(),
                 albums_grid,
             );
+            // peak spaghetti code
         } else if page == "playlists" {
-            //
+            // e
         } else if page == "settings" {
-            // show settings page
+            //
         }
     }
 
-    // Create the main window
+    // create the main window
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("Gluck Music Player")
+        .title("Gluck: the best gluck that ever glucked")
         .default_width(1000)
         .default_height(600)
         .child(&rows_container)
         .build();
 
-    window.present(); // Show the window
+    window.present(); // this comment eused to be useful, RIP that comment
 }
 
 fn collect_album_lib(music_dir: &Path, albums_grid: &FlowBox) {
@@ -187,23 +186,34 @@ fn collect_album_lib(music_dir: &Path, albums_grid: &FlowBox) {
                 lib.push(album);
             }
         }
-    }
+    } // idk why tf nvim keeps getting mad at me for this, but im going to pretend there isnt a reason
 
     for album in lib {
         let album_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        let make_the_album_a_button_because_im_dumb = gtk4::Button::new();
+        make_the_album_a_button_because_im_dumb.set_size_request(180, 180);
         let album_art_image = gtk4::Image::from_paintable(Some(&album.album_art));
-        album_art_image.set_pixel_size(150);
+        album_art_image.set_pixel_size(150); // make image but big
         let album_title_label = gtk4::Label::new(Some(&album.title));
+        album_title_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        album_title_label.set_max_width_chars(15);
         let album_artist_label = gtk4::Label::new(Some(&album.artist));
+        album_artist_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        album_artist_label.set_max_width_chars(15);
+
         album_container.append(&album_art_image);
         album_container.append(&album_title_label);
         album_container.append(&album_artist_label);
+        make_the_album_a_button_because_im_dumb.set_child(Some(&album_container));
+        make_the_album_a_button_because_im_dumb.set_hexpand(false);
+        make_the_album_a_button_because_im_dumb.set_vexpand(false);
 
-        albums_grid.append(&album_container); // use append, not insert
+        albums_grid.append(&make_the_album_a_button_because_im_dumb);
     }
 }
 
 fn first_image_in_dir(dir: &Path) -> Option<PathBuf> {
+    // another budget isaac budget solution
     let entries = fs::read_dir(dir).ok()?;
     for entry in entries {
         let entry = entry.ok()?;
@@ -224,18 +234,18 @@ fn first_image_in_dir(dir: &Path) -> Option<PathBuf> {
 }
 
 fn load_album_info(dir: &Path) -> Result<Album, String> {
-    // loading the album art (breaks if there is none i cba)
+    // loading the album art (breaks if there is none i cba with error handeling)
     let file =
         first_image_in_dir(dir).ok_or_else(|| format!("No album image found in {:?}", dir))?;
     let album_art_file = gtk4::gio::File::for_path(&file);
 
     let album_art = gtk4::gdk::Texture::from_file(&album_art_file)
-        .map_err(|e| format!("Failed to load album art into Texture: {}", e))?
+        .map_err(|e| format!("couldnt load album art:: {}. your probably just stupid", e))?
         .upcast::<Paintable>();
 
-    // picks a random file to use metadata for
+    // picks a random file to use metadata for (im lazy as shit)
     let arbitrary_song_file = fs::read_dir(dir)
-        .map_err(|e| format!("Failed to read directory: {}", e))?
+        .map_err(|e| format!("couldnt read directory: {}", e))?
         .filter_map(|e| e.ok())
         .find_map(|entry| {
             let path = entry.path();
@@ -257,7 +267,7 @@ fn load_album_info(dir: &Path) -> Result<Album, String> {
         .map_err(|e| format!("Could not get tags from audio file: {:?}", e))?;
 
     let song_title = tag
-        .title()
+        .album()
         .unwrap_or("Unknown Title".to_string())
         .to_string();
     let song_artist = tag
@@ -265,7 +275,7 @@ fn load_album_info(dir: &Path) -> Result<Album, String> {
         .unwrap_or("Unknown Artist".to_string())
         .to_string();
 
-    // return album struct
+    // return all this bs into the album structure
     Ok(Album {
         dir: dir.to_path_buf(),
         title: song_title,
