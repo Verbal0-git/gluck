@@ -7,6 +7,7 @@ edition = "2024"
 glib = "0.21.4"
 gio = "0.21.4"
 regex = "1.12.2"
+taglib = "1.0.0"
 
 [dependencies.gtk4]
 version = "0.10.2"
