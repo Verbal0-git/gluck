@@ -1,4 +1,5 @@
-use gtk4::{Application, ApplicationWindow, gdk::Paintable, prelude::*};
+use dirs;
+use gtk4::{Application, ApplicationWindow, FlowBox, gdk::Paintable, prelude::*};
 use std::{fs, path::Path, path::PathBuf};
 use taglib;
 
@@ -33,6 +34,24 @@ fn build_ui(app: &Application) {
 
     let page_menu_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
+    // Albums page
+    //
+    //
+
+    let albums_grid = gtk4::FlowBox::new();
+    albums_grid.set_valign(gtk4::Align::Start);
+    albums_grid.set_max_children_per_line(5); // optional
+    albums_grid.set_selection_mode(gtk4::SelectionMode::None);
+    albums_grid.set_row_spacing(10);
+    albums_grid.set_column_spacing(10);
+
+    let scroller = gtk4::ScrolledWindow::new();
+    scroller.set_child(Some(&albums_grid));
+
+    scroller.set_vexpand(true);
+    albums_grid.set_hexpand(true);
+    albums_grid.set_vexpand(true);
+
     // dividers
     let v_div = gtk4::Separator::new(gtk4::Orientation::Vertical);
     let h_div = gtk4::Separator::new(gtk4::Orientation::Horizontal);
@@ -41,19 +60,19 @@ fn build_ui(app: &Application) {
     let page_button_albums = gtk4::Button::with_label("Albums");
     page_button_albums.set_size_request(80, 40);
     page_button_albums.connect_clicked(move |_| {
-        switch_page("albums");
+        switch_page("albums", &albums_grid);
     });
 
     let page_button_playlists = gtk4::Button::with_label("Playlists");
     page_button_playlists.set_size_request(80, 40);
     page_button_playlists.connect_clicked(move |_| {
-        switch_page("playlists");
+        //switch_page("playlists");
     });
 
     let page_button_settings = gtk4::Button::with_label("Settings");
     page_button_settings.set_size_request(80, 40);
     page_button_settings.connect_clicked(move |_| {
-        switch_page("settings");
+        //switch_page("settings");
     });
 
     // top ribbon
@@ -127,57 +146,130 @@ fn build_ui(app: &Application) {
 
     main_column_container.append(&page_menu_container);
     main_column_container.append(&v_div);
+    main_column_container.append(&scroller);
 
     rows_container.append(&ribbon);
     rows_container.append(&h_div);
     rows_container.append(&main_column_container);
 
-    fn switch_page(page: &str) {
+    fn switch_page(page: &str, albums_grid: &gtk4::FlowBox) {
         println!("{}", page);
+        if page == "albums" {
+            collect_album_lib(
+                dirs::home_dir().unwrap().join("Music").as_path(),
+                albums_grid,
+            );
+        } else if page == "playlists" {
+            //
+        } else if page == "settings" {
+            // show settings page
+        }
     }
 
     // Create the main window
     let window = ApplicationWindow::builder()
         .application(app)
         .title("Gluck Music Player")
-        // .default_width(400)
-        // .default_height(800)
+        .default_width(1000)
+        .default_height(600)
         .child(&rows_container)
         .build();
 
     window.present(); // Show the window
 }
 
-fn collect_album_lib(music_dir: String) {
-    let lib: Vec<Album> = Vec::new();
-    for entry in fs::read_dir(music_dir).unwrap() {
-        let album_path = entry.unwrap();
-        // lib.append(load_album_info(entry))
+fn collect_album_lib(music_dir: &Path, albums_grid: &FlowBox) {
+    let mut lib: Vec<Album> = Vec::new();
+
+    for entry in fs::read_dir(music_dir).unwrap_or_else(|_| panic!("Failed to read dir")) {
+        if let Ok(entry) = entry {
+            if let Ok(album) = load_album_info(&entry.path()) {
+                lib.push(album);
+            }
+        }
     }
 
-    fn load_album_info(dir: &Path) -> Result<Album, String> {
-        let file = gio::File::for_path(dir);
-        let arbitrary_song_path = Path::new("~/Music/Outer Wilds/01 Timber Hearth.ogg");
-        let arbitrary_song = taglib::File::new(arbitrary_song_path)
-            .map_err(|e| format!("Failed to open or parse file: {}", e))?;
+    for album in lib {
+        let album_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        let album_art_image = gtk4::Image::from_paintable(Some(&album.album_art));
+        album_art_image.set_pixel_size(150);
+        let album_title_label = gtk4::Label::new(Some(&album.title));
+        let album_artist_label = gtk4::Label::new(Some(&album.artist));
+        album_container.append(&album_art_image);
+        album_container.append(&album_title_label);
+        album_container.append(&album_artist_label);
 
-        let tags = arbitrary_song
-            .tag()
-            .map_err(|e| format!("File does not contain readable tags: {}", e))?;
+        albums_grid.append(&album_container); // use append, not insert
+    }
+}
 
-        let artist = tags.artist();
-        let album = tags.album();
+fn first_image_in_dir(dir: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
 
-        let album_art = gtk4::gdk::Texture::from_file(&file)
-            .map_err(|e| format!("Failed to load image into Texture: {}", e))?
-            .upcast::<Paintable>();
+        match path.extension().and_then(|e| e.to_str()) {
+            //ty to gpt for this long ass .sequence
+            Some(ext) if matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg") => {
+                return Some(path);
+            }
+            _ => {}
+        }
+    }
+    None
+}
 
-        // Return struct instance
-        Ok(Album {
-            dir: dir.to_path_buf(),
-            title: "e".to_owned(),
-            artist: "h".to_owned(),
-            album_art: album_art,
+fn load_album_info(dir: &Path) -> Result<Album, String> {
+    // loading the album art (breaks if there is none i cba)
+    let file =
+        first_image_in_dir(dir).ok_or_else(|| format!("No album image found in {:?}", dir))?;
+    let album_art_file = gtk4::gio::File::for_path(&file);
+
+    let album_art = gtk4::gdk::Texture::from_file(&album_art_file)
+        .map_err(|e| format!("Failed to load album art into Texture: {}", e))?
+        .upcast::<Paintable>();
+
+    // picks a random file to use metadata for
+    let arbitrary_song_file = fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read directory: {}", e))?
+        .filter_map(|e| e.ok())
+        .find_map(|entry| {
+            let path = entry.path();
+            let ext = path.extension()?.to_str()?.to_lowercase();
+            if matches!(ext.as_str(), "ogg" | "mp3") {
+                Some(path)
+            } else {
+                None
+            }
         })
-    }
+        .ok_or_else(|| format!("No audio file found in {:?}", dir))?;
+
+    // load song tags
+    let song_file = taglib::File::new(arbitrary_song_file.to_str().unwrap())
+        .map_err(|e| format!("Could not open audio file: {:?}", e))?;
+
+    let tag = song_file
+        .tag()
+        .map_err(|e| format!("Could not get tags from audio file: {:?}", e))?;
+
+    let song_title = tag
+        .title()
+        .unwrap_or("Unknown Title".to_string())
+        .to_string();
+    let song_artist = tag
+        .artist()
+        .unwrap_or("Unknown Artist".to_string())
+        .to_string();
+
+    // return album struct
+    Ok(Album {
+        dir: dir.to_path_buf(),
+        title: song_title,
+        artist: song_artist,
+        album_art,
+    })
 }
