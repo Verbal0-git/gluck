@@ -1,5 +1,8 @@
-use gtk4::{Application, ApplicationWindow, FlowBox, ListBox, gdk::Paintable, prelude::*};
-use std::{fs, path::{Path, PathBuf}, time};
+use gtk4::{Application, ApplicationWindow, FlowBox, gdk::Paintable, prelude::*};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 fn main() {
     let app = Application::builder()
@@ -18,7 +21,7 @@ pub struct Song {
     pub album_artist: String,
     pub duration: String,
     pub disk: i8,
-    pub track_num: i16
+    pub track_num: i16,
 }
 
 pub struct Album {
@@ -33,8 +36,6 @@ fn build_ui(app: &Application) {
 
     let page_menu_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
-    let generic_path_because_im_stupid = Path::new("/home/");
-
     // Albums page ------------------------------------------------------
     //
     //
@@ -43,8 +44,8 @@ fn build_ui(app: &Application) {
     albums_grid.set_valign(gtk4::Align::Start);
     // albums_grid.set_max_children_per_line(10);
     albums_grid.set_selection_mode(gtk4::SelectionMode::None);
-    albums_grid.set_row_spacing(10);
-    albums_grid.set_column_spacing(10);
+    albums_grid.set_row_spacing(2);
+    albums_grid.set_column_spacing(2);
 
     let scroller = gtk4::ScrolledWindow::new();
     scroller.set_child(Some(&albums_grid));
@@ -165,14 +166,19 @@ fn build_ui(app: &Application) {
 
     // flowboxes are for nerds
 
-    fn switch_page(page: &str, albums_grid: &gtk4::FlowBox, album_path: &Path, track_list_container: gtk4::ListBox, main_window: gtk4::Box) {
+    fn switch_page(
+        page: &str,
+        albums_grid: &gtk4::FlowBox,
+        track_list_container: gtk4::ListBox,
+        main_window: gtk4::Box,
+    ) {
         println!("{}", page);
         if page == "albums" {
             collect_album_lib(
                 dirs::home_dir().unwrap().join("Music").as_path(),
                 albums_grid,
                 track_list_container,
-                main_window
+                main_window,
             );
             // peak spaghetti code
         } else if page == "playlists" {
@@ -184,7 +190,12 @@ fn build_ui(app: &Application) {
         }
     }
 
-    switch_page("albums", &albums_grid, generic_path_because_im_stupid, track_list_container, main_column_container);
+    switch_page(
+        "albums",
+        &albums_grid,
+        track_list_container,
+        main_column_container,
+    );
 
     // create the main window
     let window = ApplicationWindow::builder()
@@ -198,7 +209,12 @@ fn build_ui(app: &Application) {
     window.present(); // this comment eused to be useful, RIP that comment
 }
 
-fn collect_album_lib(music_dir: &Path, albums_grid: &FlowBox, track_list_container: gtk4::ListBox, main_window: gtk4::Box) {
+fn collect_album_lib(
+    music_dir: &Path,
+    albums_grid: &FlowBox,
+    track_list_container: gtk4::ListBox,
+    main_window: gtk4::Box,
+) {
     let mut lib: Vec<Album> = Vec::new();
 
     for entry in fs::read_dir(music_dir).unwrap_or_else(|_| panic!("Failed to read dir")) {
@@ -220,7 +236,11 @@ fn collect_album_lib(music_dir: &Path, albums_grid: &FlowBox, track_list_contain
             while let Some(child) = main_window_ref.last_child() {
                 main_window_ref.remove(&child);
             }
-            instance_track_list(get_the_damn_track_list(&album.dir), &value, &main_window_ref);
+            instance_track_list(
+                get_the_damn_track_list(&album.dir),
+                &value,
+                &main_window_ref,
+            );
         });
 
         let album_art_image = gtk4::Image::from_paintable(Some(&album.album_art));
@@ -324,18 +344,16 @@ fn get_the_damn_track_list(album_path: &Path) -> Vec<Song> {
                 if ext == "mp3" || ext == "ogg" {
                     let song_file = taglib::File::new(entry.path().to_str().unwrap()).unwrap();
                     let tag = song_file.tag().unwrap();
-                    let duration = song_file.audioproperties()
-                            .map(|p| p.length())
-                            .unwrap_or(0);
-                        let song = Song {
-                            album: tag.album().unwrap_or("Unknown Album".to_string()), // unwrap or is actually a god send
-                            album_artist: tag.artist().unwrap_or("Unknown Artist".to_string()),
-                            path: entry.path(),
-                            title: tag.title().unwrap_or("Unknown Title".to_string()),
-                            duration: (format!("{}:{}", (duration / 60), (duration % 60))),
-                            disk: 1,
-                            track_num: (tag.track().map(|t| t as i16).unwrap_or(0)),
-                        };
+                    let duration = song_file.audioproperties().map(|p| p.length()).unwrap_or(0);
+                    let song = Song {
+                        album: tag.album().unwrap_or("Unknown Album".to_string()), // unwrap or is actually a god send
+                        album_artist: tag.artist().unwrap_or("Unknown Artist".to_string()),
+                        path: entry.path(),
+                        title: tag.title().unwrap_or("Unknown Title".to_string()),
+                        duration: (format!("{}:{}", (duration / 60), (duration % 60))),
+                        disk: 1,
+                        track_num: (tag.track().map(|t| t as i16).unwrap_or(0)),
+                    };
                     album_contents.push(song);
                 }
             }
@@ -345,12 +363,15 @@ fn get_the_damn_track_list(album_path: &Path) -> Vec<Song> {
     // did the same thing as the function earlier here, nvim still hates me
 }
 
-
-fn instance_track_list(track_list: Vec<Song>, track_list_container: &gtk4::ListBox, main_window: &gtk4::Box) {
+fn instance_track_list(
+    track_list: Vec<Song>,
+    track_list_container: &gtk4::ListBox,
+    main_window: &gtk4::Box,
+) {
     // Clear old tracks first
     while let Some(child) = track_list_container.last_child() {
-                track_list_container.remove(&child);
-            }
+        track_list_container.remove(&child);
+    }
 
     for track in track_list {
         let row = gtk4::ListBoxRow::new();
@@ -359,7 +380,10 @@ fn instance_track_list(track_list: Vec<Song>, track_list_container: &gtk4::ListB
         let label_duration = gtk4::Label::new(Some(&track.duration));
         label_duration.set_size_request(40, 20);
         let label_title = gtk4::Label::new(Some(&track.title));
-        label_title.set_size_request(40, 20);
+        label_title.set_size_request(300, 20);
+        label_title.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label_title.set_max_width_chars(8);
+        label_title.set_xalign(-1.0);
         let label_disk = gtk4::Label::new(Some(&track.disk.to_string()));
         label_disk.set_size_request(40, 20);
         let label_track_num = gtk4::Label::new(Some(&track.track_num.to_string()));
@@ -384,5 +408,4 @@ fn instance_track_list(track_list: Vec<Song>, track_list_container: &gtk4::ListB
     scroller.set_hexpand(true);
 
     main_window.append(&scroller);
-    
 }
