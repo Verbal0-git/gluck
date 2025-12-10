@@ -1,4 +1,5 @@
 use gtk4::{Application, ApplicationWindow, FlowBox, gdk::Paintable, prelude::*};
+use rodio::{Decoder, OutputStream, Sink, source::Source};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -15,12 +16,13 @@ fn main() {
     app.run();
 }
 
+#[derive(Clone, Debug)]
 pub struct Song {
     pub path: PathBuf,
     pub title: String,
     pub album: String,
     pub album_artist: String,
-    pub duration: String, // dont ask questions
+    pub duration: u32, // dont ask questions
     pub disk: i8,
     pub track_num: i16, // Clear existing album buttons before reloading
 }
@@ -30,6 +32,11 @@ pub struct Album {
     pub title: String,
     pub artist: String,
     pub album_art: gtk4::gdk::Paintable,
+}
+
+pub struct Player {
+    _stream: OutputStream, // must be kept alive
+    sink: Sink,
 }
 
 fn build_ui(app: &Application) {
@@ -114,6 +121,7 @@ fn build_ui(app: &Application) {
     ribbon_progress_bar.set_size_request(400, 40);
     ribbon_progress_bar.set_hexpand(true);
     ribbon_progress_bar.set_valign(gtk4::Align::Center);
+    ribbon_progress_bar.set_text(Some("fuck this stupid pice of shit"));
     // FUCKING EXPAND VERTICALLY BITCH
 
     let ribbon_toggle_shuffle = gtk4::Button::with_label("Shuffle");
@@ -251,7 +259,9 @@ fn instance_track_list(
         let make_the_track_button_lol = gtk4::Button::new();
         let track_container = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
 
-        let label_duration = gtk4::Label::new(Some(&track.duration));
+        let label_duration = gtk4::Label::new(Some(
+            format!("{}:{}", track.duration / 60, track.duration % 60).as_str(),
+        ));
         label_duration.set_size_request(40, 20);
         label_duration.set_margin_end(15);
         let label_title = gtk4::Label::new(Some(&track.title));
@@ -271,15 +281,19 @@ fn instance_track_list(
         track_container.append(&label_duration);
         make_the_track_button_lol.set_child(Some(&track_container));
 
-        let track_title = track.title;
+        let track_title = track.title.clone();
         let track_title_ref = track_title.clone();
 
+        let track_ref = track.clone();
+
         make_the_track_button_lol.connect_clicked(move |_| {
-            println!("playing: {:?}", track.path);
+            println!("now raping your ears with: {:?}", track_title);
+            play_song(&track);
         });
 
         row.connect_activate(move |_| {
-            println!("clicked on: {}", track_title_ref);
+            println!("now raping your ears with: {:?}", track_title_ref);
+            play_song(&track_ref);
         });
 
         row.set_child(Some(&make_the_track_button_lol));
@@ -371,7 +385,7 @@ fn get_the_damn_track_list(album_path: &Path) -> Vec<Song> {
                         album_artist: tag.artist().unwrap_or("Unknown Artist".to_string()),
                         path: entry.path(),
                         title: tag.title().unwrap_or("Unknown Title".to_string()),
-                        duration: (format!("{}:{}", (duration / 60), (duration % 60))),
+                        duration: duration,
                         disk: 0,
                         track_num: (tag.track().map(|t| t as i16).unwrap_or(0)), // wtf is ts bro, stack overflow actually carrying my ass
                     };
@@ -383,4 +397,22 @@ fn get_the_damn_track_list(album_path: &Path) -> Vec<Song> {
     album_contents.sort_by_key(|song| song.track_num);
 
     album_contents
+}
+
+fn play_song(song: &Song) -> Player {
+    println!("Playing song: {}", song.title);
+
+    let (stream, handle) = OutputStream::try_default().unwrap();
+    let sink = Sink::try_new(&handle).unwrap();
+
+    let file = std::io::BufReader::new(fs::File::open(&song.path).unwrap());
+    let source = Decoder::new(file).unwrap();
+
+    sink.append(source);
+    sink.play();
+
+    Player {
+        _stream: stream,
+        sink,
+    }
 }
