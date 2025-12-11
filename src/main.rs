@@ -1,19 +1,110 @@
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use gtk4::{Application, ApplicationWindow, FlowBox, gdk::Paintable, prelude::*};
-use rodio::{Decoder, OutputStream, Sink, source::Source};
+use rodio::{Decoder, OutputStreamBuilder, Sink}; // Removed unused OutputStream
 use std::{
     fs,
     path::{Path, PathBuf},
     rc::Rc,
+    thread,
 };
 
 fn main() {
+    // my old enemy, touples
+    let (tx, rx) = unbounded::<PlayerCommand>();
+
+    // way easier than python lol
+    thread::spawn(move || {
+        audio_thread(rx);
+    });
+
+    let player = Rc::new(Player { command_tx: tx });
+
     let app = Application::builder()
         .application_id("com.gluck.main")
         .build();
 
-    app.connect_activate(build_ui);
+    let player_clone = player.clone();
+    app.connect_activate(move |app| build_ui(app, player_clone.clone()));
 
     app.run();
+}
+
+// Command the ui can send to the audio thread
+pub enum PlayerCommand {
+    Play(PathBuf),
+    Pause,
+    Resume,
+    Stop,
+}
+
+pub struct Player {
+    command_tx: Sender<PlayerCommand>,
+}
+
+fn audio_thread(command_rx: Receiver<PlayerCommand>) {
+    // let rodio exist
+    let stream = match rodio::OutputStreamBuilder::open_default_stream() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Commited sudoku: {}", e);
+            return;
+        }
+    };
+
+    let sink = rodio::Sink::connect_new(&stream.mixer());
+    sink.play();
+
+    loop {
+        match command_rx.recv() {
+            Ok(command) => match command {
+                PlayerCommand::Play(path) => {
+                    println!("Playing {:?}", path);
+                    sink.clear();
+
+                    // load and play a file
+                    match std::fs::File::open(&path) {
+                        Ok(file) => {
+                            let buffered = std::io::BufReader::new(file);
+                            match rodio::Decoder::new(buffered) {
+                                Ok(source) => {
+                                    sink.append(source);
+
+                                    if sink.empty() {
+                                        eprintln!("Decoder probably shat themselves");
+                                    } else {
+                                        println!(
+                                            "ive got a queue of: {}, your really giving me a hard time",
+                                            sink.len()
+                                        );
+                                    }
+                                    sink.play();
+                                }
+                                Err(e) => eprintln!("asjfjnl: {}", e),
+                            }
+                        }
+                        Err(e) => eprintln!("Failed to open audio file {:?}: {}", path, e),
+                    }
+                }
+                PlayerCommand::Pause => {
+                    println!("Paused");
+                    sink.pause();
+                }
+                PlayerCommand::Resume => {
+                    println!("Resumed");
+                    sink.play();
+                }
+                PlayerCommand::Stop => {
+                    println!("Stopd");
+                    sink.stop();
+                    sink.clear();
+                }
+            },
+            Err(e) => {
+                println!("Oh dear, your fucked.. {}", e);
+                break;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -34,12 +125,7 @@ pub struct Album {
     pub album_art: gtk4::gdk::Paintable,
 }
 
-pub struct Player {
-    _stream: OutputStream, // must be kept alive
-    sink: Sink,
-}
-
-fn build_ui(app: &Application) {
+fn build_ui(app: &Application, player: Rc<Player>) {
     let rows_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
     // the actuall stuff on screen, probably needed
@@ -107,10 +193,26 @@ fn build_ui(app: &Application) {
 
     // top ribbon
     let ribbon = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+
+    // Connect Play/Pause button
+    let player_pause = player.clone();
     let ribbon_button_pause = gtk4::Button::with_label("Pause");
     ribbon_button_pause.set_size_request(40, 40);
+    ribbon_button_pause.connect_clicked(move |_| {
+        // NOTE: Make this a toggle later (if you forget i will shoot you)
+        if let Err(e) = player_pause.command_tx.send(PlayerCommand::Pause) {
+            eprintln!("i cannot be stopped: {}", e);
+        }
+    });
+    let player_stop = player.clone();
     let ribbon_button_stop = gtk4::Button::with_label("Stop");
     ribbon_button_stop.set_size_request(40, 40);
+    ribbon_button_stop.connect_clicked(move |_| {
+        if let Err(e) = player_stop.command_tx.send(PlayerCommand::Stop) {
+            eprintln!("jhbashbdhf: {}", e);
+        }
+    });
+
     let ribbon_button_back = gtk4::Button::with_label("Back");
     ribbon_button_back.set_size_request(40, 40);
     let ribbon_button_forward = gtk4::Button::with_label("Forward");
@@ -169,6 +271,7 @@ fn build_ui(app: &Application) {
         &albums_grid,
         track_list_container.clone(),
         main_content_stack.clone(), // pass the stack reference
+        player.clone(),             // Pass player reference
     );
     switch_page("albums", &main_content_stack);
 
@@ -189,6 +292,7 @@ fn collect_album_lib(
     albums_grid: &FlowBox,
     track_list_container: Rc<gtk4::ListBox>,
     main_content_stack: Rc<gtk4::Stack>,
+    player: Rc<Player>, // Added Player
 ) {
     let mut lib: Vec<Album> = Vec::new();
 
@@ -211,6 +315,7 @@ fn collect_album_lib(
 
         let track_list_container_ref = track_list_container.clone();
         let main_content_stack_ref = main_content_stack.clone();
+        let player_ref = player.clone(); // Clone player for the closure
 
         let album_dir = album.dir.clone(); // Clone the path for the closure
 
@@ -221,6 +326,7 @@ fn collect_album_lib(
                 track_list,
                 &track_list_container_ref,
                 &main_content_stack_ref,
+                player_ref.clone(), // Pass player reference down
             );
         });
 
@@ -249,6 +355,7 @@ fn instance_track_list(
     track_list: Vec<Song>,
     track_list_container: &gtk4::ListBox,
     main_content_stack: &gtk4::Stack,
+    player: Rc<Player>, // Added Player
 ) {
     while let Some(child) = track_list_container.last_child() {
         track_list_container.remove(&child);
@@ -285,15 +392,30 @@ fn instance_track_list(
         let track_title_ref = track_title.clone();
 
         let track_ref = track.clone();
+        let player_ref_button = player.clone(); // Clone for button closure
+        let player_ref_row = player.clone(); // Clone for row closure
 
         make_the_track_button_lol.connect_clicked(move |_| {
             println!("now raping your ears with: {:?}", track_title);
-            play_song(&track);
+            // Send the Play command to the audio thread
+            if let Err(e) = player_ref_button
+                .command_tx
+                .send(PlayerCommand::Play(track_ref.path.clone()))
+            {
+                eprintln!("Failed to send Play command: {}", e);
+            }
         });
 
+        let track_ref_row = track.clone(); // Clone for row closure
         row.connect_activate(move |_| {
             println!("now raping your ears with: {:?}", track_title_ref);
-            play_song(&track_ref);
+            // Send the Play command to the audio thread
+            if let Err(e) = player_ref_row
+                .command_tx
+                .send(PlayerCommand::Play(track_ref_row.path.clone()))
+            {
+                eprintln!("Failed to send Play command: {}", e);
+            }
         });
 
         row.set_child(Some(&make_the_track_button_lol));
@@ -337,7 +459,7 @@ fn load_album_info(dir: &Path) -> Result<Album, String> {
         .find_map(|entry| {
             let path = entry.path();
             let ext = path.extension()?.to_str()?.to_lowercase();
-            if matches!(ext.as_str(), "ogg" | "mp3" | "flac") {
+            if matches!(ext.as_str(), "ogg" | "mp3" | "flac" | "wav") {
                 // if this doesnt support flac henery will murder me
                 Some(path)
             } else {
@@ -397,22 +519,4 @@ fn get_the_damn_track_list(album_path: &Path) -> Vec<Song> {
     album_contents.sort_by_key(|song| song.track_num);
 
     album_contents
-}
-
-fn play_song(song: &Song) -> Player {
-    println!("Playing song: {}", song.title);
-
-    let (stream, handle) = OutputStream::try_default().unwrap();
-    let sink = Sink::try_new(&handle).unwrap();
-
-    let file = std::io::BufReader::new(fs::File::open(&song.path).unwrap());
-    let source = Decoder::new(file).unwrap();
-
-    sink.append(source);
-    sink.play();
-
-    Player {
-        _stream: stream,
-        sink,
-    }
 }
