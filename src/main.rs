@@ -1,6 +1,5 @@
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use gtk4::{Application, ApplicationWindow, FlowBox, gdk::Paintable, prelude::*};
-use rodio::{Decoder, OutputStreamBuilder, Sink}; // Removed unused OutputStream
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -13,25 +12,27 @@ fn main() {
     let (tx, rx) = unbounded::<PlayerCommand>();
 
     // way easier than python lol
+    let mut paused = false;
     thread::spawn(move || {
-        audio_thread(rx);
+        audio_thread(rx, paused);
     });
 
     let player = Rc::new(Player { command_tx: tx });
+    let mut paused = false;
 
     let app = Application::builder()
         .application_id("com.gluck.main")
         .build();
 
     let player_clone = player.clone();
-    app.connect_activate(move |app| build_ui(app, player_clone.clone()));
+    app.connect_activate(move |app| build_ui(app, player_clone.clone(), paused.clone()));
 
     app.run();
 }
 
 // Command the ui can send to the audio thread
 pub enum PlayerCommand {
-    Play(PathBuf),
+    Play(Vec<Song>),
     Pause,
     Resume,
     Stop,
@@ -41,7 +42,7 @@ pub struct Player {
     command_tx: Sender<PlayerCommand>,
 }
 
-fn audio_thread(command_rx: Receiver<PlayerCommand>) {
+fn audio_thread(command_rx: Receiver<PlayerCommand>, paused: bool) {
     // let rodio exist
     let stream = match rodio::OutputStreamBuilder::open_default_stream() {
         Ok(s) => s,
@@ -57,37 +58,42 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
     loop {
         match command_rx.recv() {
             Ok(command) => match command {
-                PlayerCommand::Play(path) => {
-                    println!("Playing {:?}", path);
+                PlayerCommand::Play(queue) => {
+                    println!(
+                        "Queue of length {}. How many songs do you need to listen to god damn it",
+                        queue.len().clone()
+                    );
                     sink.clear();
+                    for song in queue {
+                        let path = song.path;
+                        println!("now raping your ears with {}", song.title);
 
-                    // load and play a file
-                    match std::fs::File::open(&path) {
-                        Ok(file) => {
-                            let buffered = std::io::BufReader::new(file);
-                            match rodio::Decoder::new(buffered) {
-                                Ok(source) => {
-                                    sink.append(source);
+                        // load and play a file
+                        match std::fs::File::open(&path) {
+                            Ok(file) => {
+                                let buffered = std::io::BufReader::new(file);
+                                match rodio::Decoder::new(buffered) {
+                                    Ok(source) => {
+                                        sink.append(source);
 
-                                    if sink.empty() {
-                                        eprintln!("Decoder probably shat themselves");
-                                    } else {
-                                        println!(
-                                            "ive got a queue of: {}, your really giving me a hard time",
-                                            sink.len()
-                                        );
+                                        if sink.empty() {
+                                            eprintln!("Decoder probably shat themselves");
+                                        } else {
+                                            println!("{}", sink.len());
+                                        }
+                                        sink.play();
                                     }
-                                    sink.play();
+                                    Err(e) => eprintln!("asjfjnl: {}", e),
                                 }
-                                Err(e) => eprintln!("asjfjnl: {}", e),
                             }
+                            Err(e) => eprintln!("Failed to open audio file {:?}: {}", path, e),
                         }
-                        Err(e) => eprintln!("Failed to open audio file {:?}: {}", path, e),
                     }
                 }
                 PlayerCommand::Pause => {
                     println!("Paused");
                     sink.pause();
+                    paused = true;
                 }
                 PlayerCommand::Resume => {
                     println!("Resumed");
@@ -125,7 +131,7 @@ pub struct Album {
     pub album_art: gtk4::gdk::Paintable,
 }
 
-fn build_ui(app: &Application, player: Rc<Player>) {
+fn build_ui(app: &Application, player: Rc<Player>, mut paused: bool) {
     let rows_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
     // the actuall stuff on screen, probably needed
@@ -200,8 +206,14 @@ fn build_ui(app: &Application, player: Rc<Player>) {
     ribbon_button_pause.set_size_request(40, 40);
     ribbon_button_pause.connect_clicked(move |_| {
         // NOTE: Make this a toggle later (if you forget i will shoot you)
-        if let Err(e) = player_pause.command_tx.send(PlayerCommand::Pause) {
-            eprintln!("i cannot be stopped: {}", e);
+        if paused == false {
+            if let Err(e) = player_pause.command_tx.send(PlayerCommand::Pause) {
+                eprintln!("i cannot be stopped: {}", e);
+            }
+        } else {
+            if let Err(e) = player_pause.command_tx.send(PlayerCommand::Resume) {
+                eprintln!("i cannot be stopped: {}", e);
+            }
         }
     });
     let player_stop = player.clone();
@@ -361,6 +373,8 @@ fn instance_track_list(
         track_list_container.remove(&child);
     }
 
+    let track_list_ref = track_list.clone();
+
     for track in track_list {
         let row = gtk4::ListBoxRow::new();
         let make_the_track_button_lol = gtk4::Button::new();
@@ -378,7 +392,7 @@ fn instance_track_list(
         label_title.set_hexpand(true);
         //let label_disk = gtk4::Label::new(Some(&track.disk.to_string()));
         //label_disk.set_size_request(40, 20);
-        // disk number isnt real
+        // disk number isnt real (literally)
         let label_track_num = gtk4::Label::new(Some(&track.track_num.to_string()));
         label_track_num.set_size_request(40, 20);
 
@@ -388,34 +402,22 @@ fn instance_track_list(
         track_container.append(&label_duration);
         make_the_track_button_lol.set_child(Some(&track_container));
 
-        let track_title = track.title.clone();
-        let track_title_ref = track_title.clone();
-
-        let track_ref = track.clone();
         let player_ref_button = player.clone(); // Clone for button closure
-        let player_ref_row = player.clone(); // Clone for row closure
+        let button_track_list_ref = track_list_ref.clone();
 
         make_the_track_button_lol.connect_clicked(move |_| {
-            println!("now raping your ears with: {:?}", track_title);
-            // Send the Play command to the audio thread
+            let track_list_ref_2 = button_track_list_ref.clone();
+            let track_list_ref_3 = track_list_ref_2.clone();
+            let index = track_list_ref_2.iter().position(|x| x.title == track.title);
+
+            let queue_vec = track_list_ref_3[index.unwrap()..track_list_ref_3.len()].to_vec();
+
             if let Err(e) = player_ref_button
                 .command_tx
-                .send(PlayerCommand::Play(track_ref.path.clone()))
+                .send(PlayerCommand::Play(queue_vec))
             {
                 eprintln!("Failed to send Play command: {}", e);
-            }
-        });
-
-        let track_ref_row = track.clone(); // Clone for row closure
-        row.connect_activate(move |_| {
-            println!("now raping your ears with: {:?}", track_title_ref);
-            // Send the Play command to the audio thread
-            if let Err(e) = player_ref_row
-                .command_tx
-                .send(PlayerCommand::Play(track_ref_row.path.clone()))
-            {
-                eprintln!("Failed to send Play command: {}", e);
-            }
+            };
         });
 
         row.set_child(Some(&make_the_track_button_lol));
@@ -459,7 +461,7 @@ fn load_album_info(dir: &Path) -> Result<Album, String> {
         .find_map(|entry| {
             let path = entry.path();
             let ext = path.extension()?.to_str()?.to_lowercase();
-            if matches!(ext.as_str(), "ogg" | "mp3" | "flac" | "wav") {
+            if matches!(ext.as_str(), "ogg" | "mp3" | "flac") {
                 // if this doesnt support flac henery will murder me
                 Some(path)
             } else {
