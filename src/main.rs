@@ -12,20 +12,18 @@ fn main() {
     let (tx, rx) = unbounded::<PlayerCommand>();
 
     // way easier than python lol
-    let mut paused = false;
     thread::spawn(move || {
-        audio_thread(rx, paused);
+        audio_thread(rx);
     });
 
     let player = Rc::new(Player { command_tx: tx });
-    let mut paused = false;
 
     let app = Application::builder()
         .application_id("com.gluck.main")
         .build();
 
     let player_clone = player.clone();
-    app.connect_activate(move |app| build_ui(app, player_clone.clone(), paused.clone()));
+    app.connect_activate(move |app| build_ui(app, player_clone.clone()));
 
     app.run();
 }
@@ -42,72 +40,41 @@ pub struct Player {
     command_tx: Sender<PlayerCommand>,
 }
 
-fn audio_thread(command_rx: Receiver<PlayerCommand>, paused: bool) {
-    // let rodio exist
-    let stream = match rodio::OutputStreamBuilder::open_default_stream() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Commited sudoku: {}", e);
-            return;
-        }
-    };
+fn audio_thread(command_rx: Receiver<PlayerCommand>) {
+    let (_stream, stream_handle) =
+        rodio::OutputStream::try_default().expect("Failed to open output stream");
 
-    let sink = rodio::Sink::connect_new(&stream.mixer());
-    sink.play();
+    let sink = rodio::Sink::try_new(&stream_handle).expect("Failed to create sink");
 
-    loop {
-        match command_rx.recv() {
-            Ok(command) => match command {
-                PlayerCommand::Play(queue) => {
-                    println!(
-                        "Queue of length {}. How many songs do you need to listen to god damn it",
-                        queue.len().clone()
-                    );
-                    sink.clear();
-                    for song in queue {
-                        let path = song.path;
-                        println!("now raping your ears with {}", song.title);
+    sink.play(); // unpause once, keep alive forever
 
-                        // load and play a file
-                        match std::fs::File::open(&path) {
-                            Ok(file) => {
-                                let buffered = std::io::BufReader::new(file);
-                                match rodio::Decoder::new(buffered) {
-                                    Ok(source) => {
-                                        sink.append(source);
+    while let Ok(command) = command_rx.recv() {
+        match command {
+            PlayerCommand::Play(queue) => {
+                sink.clear();
 
-                                        if sink.empty() {
-                                            eprintln!("Decoder probably shat themselves");
-                                        } else {
-                                            println!("{}", sink.len());
-                                        }
-                                        sink.play();
-                                    }
-                                    Err(e) => eprintln!("asjfjnl: {}", e),
-                                }
-                            }
-                            Err(e) => eprintln!("Failed to open audio file {:?}: {}", path, e),
-                        }
-                    }
+                for song in queue {
+                    println!("Now playing: {}", song.title);
+
+                    let Ok(file) = std::fs::File::open(&song.path) else {
+                        continue;
+                    };
+                    let Ok(src) = rodio::Decoder::new(std::io::BufReader::new(file)) else {
+                        continue;
+                    };
+
+                    sink.append(src);
                 }
-                PlayerCommand::Pause => {
-                    println!("Paused");
-                    sink.pause();
-                    paused = true;
-                }
-                PlayerCommand::Resume => {
-                    println!("Resumed");
-                    sink.play();
-                }
-                PlayerCommand::Stop => {
-                    println!("Stopd");
-                    sink.stop();
-                    sink.clear();
-                }
-            },
-            Err(e) => {
-                println!("Oh dear, your fucked.. {}", e);
-                break;
+
+                sink.play(); // once, after append
+            }
+
+            PlayerCommand::Pause => sink.pause(),
+            PlayerCommand::Resume => sink.play(),
+
+            PlayerCommand::Stop => {
+                sink.pause();
+                sink.clear();
             }
         }
     }
@@ -131,7 +98,7 @@ pub struct Album {
     pub album_art: gtk4::gdk::Paintable,
 }
 
-fn build_ui(app: &Application, player: Rc<Player>, mut paused: bool) {
+fn build_ui(app: &Application, player: Rc<Player>) {
     let rows_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
     // the actuall stuff on screen, probably needed
@@ -202,20 +169,20 @@ fn build_ui(app: &Application, player: Rc<Player>, mut paused: bool) {
 
     // Connect Play/Pause button
     let player_pause = player.clone();
-    let ribbon_button_pause = gtk4::Button::with_label("Pause");
+    let ribbon_button_pause = gtk4::ToggleButton::with_label("Pause");
     ribbon_button_pause.set_size_request(40, 40);
-    ribbon_button_pause.connect_clicked(move |_| {
-        // NOTE: Make this a toggle later (if you forget i will shoot you)
-        if paused == false {
+    ribbon_button_pause.connect_toggled(move |btn| {
+        if btn.is_active() {
             if let Err(e) = player_pause.command_tx.send(PlayerCommand::Pause) {
-                eprintln!("i cannot be stopped: {}", e);
+                eprintln!("Failed to send Pause command: {}", e);
             }
         } else {
             if let Err(e) = player_pause.command_tx.send(PlayerCommand::Resume) {
-                eprintln!("i cannot be stopped: {}", e);
+                eprintln!("Failed to send Resume command: {}", e);
             }
         }
     });
+
     let player_stop = player.clone();
     let ribbon_button_stop = gtk4::Button::with_label("Stop");
     ribbon_button_stop.set_size_request(40, 40);
