@@ -66,7 +66,7 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
                     sink.append(src);
                 }
 
-                sink.play(); // once, after append
+                sink.play();
             }
 
             PlayerCommand::Pause => sink.pause(),
@@ -280,10 +280,8 @@ fn collect_album_lib(
     }
 
     for entry in fs::read_dir(music_dir).unwrap_or_else(|_| panic!("Failed to read dir")) {
-        if let Ok(entry) = entry {
-            if let Ok(album) = load_album_info(&entry.path()) {
-                lib.push(album);
-            }
+        if let Ok(album) = load_album_info(&entry.unwrap().path()) {
+            lib.push(album);
         }
     }
 
@@ -464,25 +462,30 @@ fn load_album_info(dir: &Path) -> Result<Album, String> {
 fn get_the_damn_track_list(album_path: &Path) -> Vec<Song> {
     let mut album_contents = Vec::new();
     for entry in fs::read_dir(album_path).unwrap() {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if ext == "mp3" || ext == "ogg" {
-                    let song_file = taglib::File::new(entry.path().to_str().unwrap()).unwrap();
-                    let tag = song_file.tag().unwrap();
-                    let duration = song_file.audioproperties().map(|p| p.length()).unwrap_or(0);
-                    let song = Song {
-                        album: tag.album().unwrap_or("Unknown Album".to_string()),
-                        album_artist: tag.artist().unwrap_or("Unknown Artist".to_string()),
-                        path: entry.path(),
-                        title: tag.title().unwrap_or("Unknown Title".to_string()),
-                        duration: duration,
-                        disk: 0,
-                        track_num: (tag.track().map(|t| t as i16).unwrap_or(0)), // wtf is ts bro, stack overflow actually carrying my ass
-                    };
-                    album_contents.push(song);
-                }
-            }
+        let path = entry.unwrap().path();
+        let ext = path.extension().unwrap();
+        if ext == "mp3" || ext == "ogg" {
+            let song_file = taglib::File::new(path.to_str().unwrap()).unwrap();
+            let tag = song_file.tag().unwrap();
+            let duration = song_file.audioproperties().map(|p| p.length()).unwrap_or(0);
+            let path_ref = path.clone();
+            let song = Song {
+                album: tag.album().unwrap_or("Unknown Album".to_string()),
+                album_artist: tag.artist().unwrap_or("Unknown Artist".to_string()),
+                path: path,
+                title: tag.title().unwrap_or(
+                    path_ref
+                        .file_name()
+                        .unwrap()
+                        .to_os_string()
+                        .into_string()
+                        .unwrap(),
+                ),
+                duration: duration,
+                disk: 0,
+                track_num: (tag.track().map(|t| t as i16).unwrap_or(0)), // wtf is ts bro, stack overflow actually carrying my ass
+            };
+            album_contents.push(song);
         }
     }
     album_contents.sort_by_key(|song| song.track_num);
