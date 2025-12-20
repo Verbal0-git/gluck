@@ -1,11 +1,23 @@
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use gtk4::{Application, ApplicationWindow, FlowBox, gdk::Paintable, prelude::*};
+use rand::{rng, seq::SliceRandom};
 use std::{
     fs,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
     thread,
 };
+
+static IS_SHUFFLED: AtomicBool = AtomicBool::new(false);
+
+fn set_shuffled(state: bool) {
+    IS_SHUFFLED.store(state, Ordering::SeqCst);
+}
+
+fn get_shuffled() -> bool {
+    IS_SHUFFLED.load(Ordering::SeqCst)
+}
 
 fn main() {
     // my old enemy, touples
@@ -30,10 +42,11 @@ fn main() {
 
 // Command the ui can send to the audio thread
 pub enum PlayerCommand {
-    Play(Vec<Song>),
+    Play(Vec<Song>, usize),
     Pause,
     Resume,
     Stop,
+    TogggleShuffle,
 }
 
 pub struct Player {
@@ -50,11 +63,25 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
 
     while let Ok(command) = command_rx.recv() {
         match command {
-            PlayerCommand::Play(queue) => {
+            PlayerCommand::Play(queue, index) => {
+                let mut origional_queue = queue.clone();
+                let mut queue_vec = vec![];
+
+                if get_shuffled() {
+                    let mut rng = rng();
+                    let starting_track = origional_queue[index].clone();
+                    origional_queue.shuffle(&mut rng);
+                    queue_vec = origional_queue;
+                    queue_vec.insert(0, starting_track);
+                    println!("track list shuffled successfully")
+                } else {
+                    queue_vec = queue[index..queue.len()].to_vec();
+                }
+
                 sink.clear();
 
-                for song in queue {
-                    println!("Now playing: {}", song.title);
+                for song in queue_vec {
+                    println!("Added {} to queue", song.title);
 
                     let Ok(file) = std::fs::File::open(&song.path) else {
                         continue;
@@ -71,6 +98,16 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
 
             PlayerCommand::Pause => sink.pause(),
             PlayerCommand::Resume => sink.play(),
+
+            PlayerCommand::TogggleShuffle => {
+                if get_shuffled() {
+                    set_shuffled(false);
+                    println!("unshuffled")
+                } else {
+                    set_shuffled(true);
+                    println!("shuffled")
+                }
+            }
 
             PlayerCommand::Stop => {
                 sink.pause();
@@ -205,8 +242,18 @@ fn build_ui(app: &Application, player: Rc<Player>) {
     ribbon_progress_bar.set_text(Some("fuck this stupid pice of shit"));
     // FUCKING EXPAND VERTICALLY BITCH
 
+    let player_shuffle = player.clone();
     let ribbon_toggle_shuffle = gtk4::Button::with_label("Shuffle");
     ribbon_toggle_shuffle.set_size_request(40, 40);
+    ribbon_toggle_shuffle.connect_clicked(move |_| {
+        if let Err(e) = player_shuffle
+            .command_tx
+            .send(PlayerCommand::TogggleShuffle)
+        {
+            eprintln!("somit with shuffle: {}", e)
+        }
+    });
+
     let ribbon_label_progress = gtk4::Label::builder()
         .height_request(40)
         .margin_end(5)
@@ -375,11 +422,11 @@ fn instance_track_list(
             let track_list_ref_3 = track_list_ref_2.clone();
             let index = track_list_ref_2.iter().position(|x| x.title == track.title);
 
-            let queue_vec = track_list_ref_3[index.unwrap()..track_list_ref_3.len()].to_vec();
+            // let queue_vec = track_list_ref_3[index.unwrap()..track_list_ref_3.len()].to_vec();
 
             if let Err(e) = player_ref_button
                 .command_tx
-                .send(PlayerCommand::Play(queue_vec))
+                .send(PlayerCommand::Play(track_list_ref_3, index.unwrap()))
             {
                 eprintln!("Failed to send Play command: {}", e);
             };
