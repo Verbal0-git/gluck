@@ -491,7 +491,13 @@ fn load_album_info(dir: &Path) -> Result<Album, String> {
 
     let song_title = tag
         .album()
-        .unwrap_or("Unknown Title".to_string())
+        .unwrap_or(
+            dir.file_name()
+                .unwrap()
+                .to_os_string()
+                .into_string()
+                .unwrap(),
+        )
         .to_string();
     let song_artist = tag
         .artist()
