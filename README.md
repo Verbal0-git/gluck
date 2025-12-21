@@ -1,2 +1,2 @@
 # gluck
-Open source music player for linux
+The best gluck that ever glucked
