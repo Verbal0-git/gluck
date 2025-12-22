@@ -1,5 +1,6 @@
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use gtk4::{Application, ApplicationWindow, FlowBox, gdk::Paintable, prelude::*};
+use libmpv2::Mpv;
 use rand::{rng, seq::SliceRandom};
 use std::{
     fs,
@@ -7,6 +8,7 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
     thread,
+    time::Duration,
 };
 
 static IS_SHUFFLED: AtomicBool = AtomicBool::new(false);
@@ -47,6 +49,7 @@ pub enum PlayerCommand {
     Resume,
     Stop,
     TogggleShuffle,
+    Forward,
 }
 
 pub struct Player {
@@ -54,64 +57,68 @@ pub struct Player {
 }
 
 fn audio_thread(command_rx: Receiver<PlayerCommand>) {
-    let (_stream, stream_handle) =
-        rodio::OutputStream::try_default().expect("Failed to open output stream");
+    let mpv = Mpv::new().expect("Cant mpv, try harder next time");
 
-    let sink = rodio::Sink::try_new(&stream_handle).expect("Failed to create sink");
-
-    sink.play(); // unpause once, keep alive forever
+    mpv.set_property("pause", true).ok();
 
     while let Ok(command) = command_rx.recv() {
         match command {
             PlayerCommand::Play(queue, index) => {
-                let mut origional_queue = queue.clone();
+                mpv.command("stop", &[]).ok();
+                mpv.command("playlist-clear", &[]).ok();
+
                 let mut queue_vec = vec![];
 
                 if get_shuffled() {
+                    queue_vec = queue.clone();
+                    let first = queue_vec[index].clone();
                     let mut rng = rng();
-                    let starting_track = origional_queue[index].clone();
-                    origional_queue.shuffle(&mut rng);
-                    queue_vec = origional_queue;
-                    queue_vec.insert(0, starting_track);
-                    println!("track list shuffled successfully")
+                    queue_vec.shuffle(&mut rng);
+                    queue_vec.insert(0, first);
                 } else {
                     queue_vec = queue[index..queue.len()].to_vec();
                 }
 
-                sink.clear();
-
-                for song in queue_vec {
-                    println!("Added {} to queue", song.title);
-
-                    let Ok(file) = std::fs::File::open(&song.path) else {
-                        continue;
-                    };
-                    let Ok(src) = rodio::Decoder::new(std::io::BufReader::new(file)) else {
-                        continue;
-                    };
-
-                    sink.append(src);
+                for (i, song) in queue_vec.iter().enumerate() {
+                    let path = song.path.to_string_lossy().to_string();
+                    println!("Added file: {} to queue", song.title);
+                    if i == 0 {
+                        // First track replaces current
+                        mpv.command("loadfile", &[&path]).ok();
+                    } else {
+                        // Remaining tracks append
+                        mpv.command("loadfile", &[&path, "append"]).ok();
+                    }
                 }
 
-                sink.play();
+                // Unpause (start playback)
+                mpv.set_property("pause", false).ok();
             }
 
-            PlayerCommand::Pause => sink.pause(),
-            PlayerCommand::Resume => sink.play(),
+            PlayerCommand::Pause => {
+                mpv.set_property("pause", true).ok();
+            }
+
+            PlayerCommand::Resume => {
+                mpv.set_property("pause", false).ok();
+            }
+
+            PlayerCommand::Forward => {
+                mpv.command("playlist-next", &[]).ok();
+            }
+
+            PlayerCommand::Stop => {
+                mpv.command("stop", &[]).ok();
+            }
 
             PlayerCommand::TogggleShuffle => {
                 if get_shuffled() {
                     set_shuffled(false);
-                    println!("unshuffled")
+                    println!("unshuffled");
                 } else {
                     set_shuffled(true);
-                    println!("shuffled")
+                    println!("shuffled");
                 }
-            }
-
-            PlayerCommand::Stop => {
-                sink.pause();
-                sink.clear();
             }
         }
     }
@@ -229,18 +236,24 @@ fn build_ui(app: &Application, player: Rc<Player>) {
         }
     });
 
-    let ribbon_button_back = gtk4::Button::with_label("Back");
-    ribbon_button_back.set_size_request(40, 40);
     let ribbon_button_forward = gtk4::Button::with_label("Forward");
     ribbon_button_forward.set_size_request(40, 40);
+    ribbon_button_forward.connect_clicked({
+        let player_forward = player.clone();
+        move |_| {
+            if let Err(e) = player_forward.command_tx.send(PlayerCommand::Forward) {
+                eprintln!("I cant fucking do it: {}", e);
+            }
+        }
+    });
+
     let ribbon_progress_bar = gtk4::ProgressBar::new();
-    ribbon_progress_bar.set_fraction(0.5);
     ribbon_progress_bar.set_show_text(true);
-    ribbon_progress_bar.set_size_request(400, 40);
+    ribbon_progress_bar.set_fraction(0.0);
+    ribbon_progress_bar.set_text(Some(
+        "This is the track name (trust me bro)".to_string().as_str(),
+    ));
     ribbon_progress_bar.set_hexpand(true);
-    ribbon_progress_bar.set_valign(gtk4::Align::Center);
-    ribbon_progress_bar.set_text(Some("fuck this stupid pice of shit"));
-    // FUCKING EXPAND VERTICALLY BITCH
 
     let player_shuffle = player.clone();
     let ribbon_toggle_shuffle = gtk4::Button::with_label("Shuffle");
@@ -254,22 +267,15 @@ fn build_ui(app: &Application, player: Rc<Player>) {
         }
     });
 
-    let ribbon_label_progress = gtk4::Label::builder()
-        .height_request(40)
-        .margin_end(5)
-        .label("00:00/00:00")
-        .build();
+    let ribbon_label_progress = gtk4::Label::new(Some("00:00 / 00:00"));
 
     ribbon.append(&ribbon_button_pause);
     ribbon.append(&ribbon_button_stop);
-    ribbon.append(&ribbon_button_back);
     ribbon.append(&ribbon_button_forward);
     ribbon.append(&ribbon_progress_bar);
     ribbon.append(&ribbon_toggle_shuffle);
     ribbon.append(&ribbon_label_progress);
-    ribbon.set_vexpand(false);
 
-    // adding to containers
     page_menu_container.append(&page_button_albums);
     page_menu_container.append(&page_button_playlists);
     page_menu_container.append(&page_button_settings);
@@ -423,7 +429,7 @@ fn instance_track_list(
             let index = track_list_ref_2.iter().position(|x| x.title == track.title);
 
             // let queue_vec = track_list_ref_3[index.unwrap()..track_list_ref_3.len()].to_vec();
-
+            //
             if let Err(e) = player_ref_button
                 .command_tx
                 .send(PlayerCommand::Play(track_list_ref_3, index.unwrap()))
