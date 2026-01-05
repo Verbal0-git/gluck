@@ -356,7 +356,8 @@ fn collect_album_lib(
                 track_list,
                 &track_list_container_ref,
                 &main_content_stack_ref,
-                player_ref.clone(), // Pass player reference down
+                player_ref.clone(), // Pass player reference down, again because im stupid and
+                                    // forgot to make it a global xD
             );
         });
 
