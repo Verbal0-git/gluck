@@ -9,7 +9,7 @@ use std::{
     io::BufRead,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, atomic::{AtomicBool, AtomicI8, AtomicI32, Ordering}},
+    sync::{Arc, atomic::{AtomicBool, AtomicI32, Ordering}},
     thread,
     time::Duration,
 };
@@ -130,12 +130,6 @@ fn start_progress_updates(progress_bar: gtk4::ProgressBar, player: Rc<Player>) {
 
             if duration > 0.0 {
                 progress_bar.set_fraction(progress  as f64 / duration);
-                println!(
-                    "Progress: {} / Duration: {} (Fraction: {})",
-                    progress,
-                    duration,
-                    progress  as f64 / duration
-                )
             }
         } else {
             println!("fucked");
@@ -180,10 +174,8 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
                     let path = song.path.to_string_lossy().to_string();
                     println!("Added file: {} to queue", song.title);
                     if i == 0 {
-                        // First track replaces current
                         mpv.command("loadfile", &[&path]).ok();
                     } else {
-                        // Remaining tracks append
                         mpv.command("loadfile", &[&path, "append"]).ok();
                     }
                 }
@@ -239,7 +231,7 @@ pub struct Song {
     pub album_artist: String,
     pub duration: u32, // dont ask questions
     pub disk: i8,
-    pub track_num: i16, // Clear existing album buttons before reloading
+    pub track_num: i16, // clear existing album buttons before reloading
 }
 
 pub struct Album {
@@ -331,10 +323,8 @@ fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
         //switch_page("tracks");
     });
 
-    // top ribbon
     let ribbon = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
 
-    // Connect Play/Pause button
     let player_pause = player.clone();
     let ribbon_button_pause = gtk4::ToggleButton::with_label("Pause");
     ribbon_button_pause.set_size_request(40, 40);
@@ -703,7 +693,6 @@ fn collect_playlists(
     //     "/home/verbal/Music/One Shot/OneShot OST (Solstice) - Ghost in the Machine.ogg",
     //];
     for entry in fs::read_dir(data_dir.join("Playlists")).unwrap() {
-        println!("{:?}", entry);
         let playlists_list_container_clone = playlists_list_container.clone();
         let player_clone = player.clone();
         let main_content_stack_clone = main_content_stack.clone();
@@ -715,7 +704,6 @@ fn collect_playlists(
         for line in reader.lines() {
             playlist_data.push(line.unwrap());
         }
-        println!("{:?}", playlist_data);
 
         let playlist_label = gtk4::Label::new(Some(&playlist_data[0].as_str()));
         let mut track_list: Vec<Song> = vec![];
