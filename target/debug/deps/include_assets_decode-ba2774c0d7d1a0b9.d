@@ -1,0 +1,10 @@
+/home/verbal/gluck/target/debug/deps/include_assets_decode-ba2774c0d7d1a0b9.d: /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/lib.rs /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/common.rs /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/checksum.rs /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/codec.rs /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/enums.rs /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/named.rs
+
+/home/verbal/gluck/target/debug/deps/libinclude_assets_decode-ba2774c0d7d1a0b9.rmeta: /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/lib.rs /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/common.rs /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/checksum.rs /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/codec.rs /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/enums.rs /home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/named.rs
+
+/home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/lib.rs:
+/home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/common.rs:
+/home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/checksum.rs:
+/home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/codec.rs:
+/home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/enums.rs:
+/home/verbal/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/include_assets_decode-0.1.0/src/named.rs:
