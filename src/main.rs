@@ -1,17 +1,21 @@
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use core::f64;
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use glib::{Bytes, timeout_add_local};
 use gtk4::{Application, ApplicationWindow, FlowBox, gdk::Paintable, prelude::*};
 use libmpv2::Mpv;
 use rand::{rng, seq::SliceRandom};
 use std::{
     fs,
+    io::BufRead,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicI8, Ordering},
     thread,
     time::Duration,
 };
 
 static IS_SHUFFLED: AtomicBool = AtomicBool::new(false);
+static MISSING_ALBUM_ICON: &[u8] = include_bytes!("./assets/missing_album_art.png");
 
 fn set_shuffled(state: bool) {
     IS_SHUFFLED.store(state, Ordering::SeqCst);
@@ -21,14 +25,51 @@ fn get_shuffled() -> bool {
     IS_SHUFFLED.load(Ordering::SeqCst)
 }
 
+static TRACK_PROGRESS: AtomicI8 = AtomicI8::new(0);
+
+fn set_track_progress(value: i8) {
+    TRACK_PROGRESS.store(value, Ordering::SeqCst);
+}
+
+fn get_track_progress() -> i8 {
+    let progress: i8 = TRACK_PROGRESS.load(Ordering::SeqCst);
+    progress
+}
+
 fn main() {
+    let temp_playlist_ex = [
+        "hello".to_string(),
+        "/home/verbal/Music/Calamity OST/Fly Of Beelzebub.ogg".to_string(),
+        "/home/verbal/Music/Deltarune/11. Cyber Battle (Solo) (DELTARUNE Chapter 2 Soundtrack) - Toby Fox.ogg".to_string(),
+    ];
+    let temp_content = temp_playlist_ex.join("\n");
+    let _ = std::fs::File::create(
+        dirs::data_dir()
+            .unwrap()
+            .as_path()
+            .join("Gluck")
+            .join("Playlists")
+            .join(temp_playlist_ex[0].clone()),
+    );
+    let hh = std::fs::write(
+        dirs::data_dir()
+            .unwrap()
+            .as_path()
+            .join("Gluck")
+            .join("Playlists")
+            .join(temp_playlist_ex[0].clone()),
+        temp_content,
+    );
+    if let Err(e) = hh {
+        eprint!("{}", e);
+    };
     // my old enemy, touples
     let (tx, rx) = unbounded::<PlayerCommand>();
 
-    // way easier than python lol
     thread::spawn(move || {
         audio_thread(rx);
     });
+    // way easier than python lol
 
     let player = Rc::new(Player { command_tx: tx });
 
@@ -37,7 +78,14 @@ fn main() {
         .build();
 
     let player_clone = player.clone();
-    app.connect_activate(move |app| build_ui(app, player_clone.clone()));
+
+    app.connect_activate(move |app| {
+        build_ui(
+            app,
+            player_clone.clone(),
+            dirs::data_dir().unwrap().as_path().join("Gluck"),
+        )
+    });
 
     app.run();
 }
@@ -50,10 +98,36 @@ pub enum PlayerCommand {
     Stop,
     TogggleShuffle,
     Forward,
+    GetTrackDuration(Sender<f64>),
 }
 
 pub struct Player {
     command_tx: Sender<PlayerCommand>,
+}
+
+fn start_progress_updates(progress_bar: gtk4::ProgressBar, player: Rc<Player>) {
+    timeout_add_local(Duration::from_millis(750), move || {
+        let (reply_tx, reply_rx) = bounded(1);
+
+        let _ = player
+            .command_tx
+            .send(PlayerCommand::GetTrackDuration(reply_tx));
+
+        if let Ok(duration) = reply_rx.recv_timeout(Duration::from_millis(50)) {
+            println!("yay");
+            let progress = get_track_progress() as f64;
+            println!("progress: {}", progress);
+            println!("duration: {}", duration);
+
+            if duration > 0.0 {
+                progress_bar.set_fraction(progress / duration);
+            }
+        } else {
+            println!("fucked");
+        }
+
+        glib::ControlFlow::Continue // keep running
+    });
 }
 
 fn audio_thread(command_rx: Receiver<PlayerCommand>) {
@@ -68,6 +142,7 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
                 mpv.command("playlist-clear", &[]).ok();
 
                 let mut queue_vec = vec![];
+                println!("{:?}", queue_vec);
 
                 if get_shuffled() {
                     queue_vec = queue.clone();
@@ -89,9 +164,14 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
                         // Remaining tracks append
                         mpv.command("loadfile", &[&path, "append"]).ok();
                     }
+                    while mpv.get_property::<f64>("duration").unwrap_or(0.0)
+                        != (mpv.get_time_us() as f64 / 60)
+                    {
+                        set_track_progress(mpv.get_time_ns().into());
+                    }
                 }
 
-                // Unpause (start playback)
+                // unpause it because apparently its paused by default
                 mpv.set_property("pause", false).ok();
             }
 
@@ -120,6 +200,12 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
                     println!("shuffled");
                 }
             }
+
+            PlayerCommand::GetTrackDuration(reply_tx) => {
+                let duration = mpv.get_property::<f64>("duration").unwrap_or(0.0);
+
+                let _ = reply_tx.send(duration);
+            }
         }
     }
 }
@@ -142,7 +228,7 @@ pub struct Album {
     pub album_art: gtk4::gdk::Paintable,
 }
 
-fn build_ui(app: &Application, player: Rc<Player>) {
+fn build_ui(app: &Application, player: Rc<Player>, DATA_DIR: PathBuf) {
     let rows_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
     // the actuall stuff on screen, probably needed
@@ -161,6 +247,12 @@ fn build_ui(app: &Application, player: Rc<Player>) {
     albums_scroller.set_vexpand(true);
     albums_scroller.set_hexpand(true);
 
+    let playlist_list_container = Rc::new(gtk4::ListBox::new());
+    let playlist_list_scroller = gtk4::ScrolledWindow::new();
+    playlist_list_scroller.set_child(Some(&*playlist_list_container));
+    playlist_list_scroller.set_vexpand(true);
+    playlist_list_scroller.set_hexpand(true);
+
     // add albums view to ui stack
     main_content_stack.add_titled(&albums_scroller, Some("albums_view"), "Albums");
 
@@ -172,6 +264,7 @@ fn build_ui(app: &Application, player: Rc<Player>) {
 
     // add track list to ui stack
     main_content_stack.add_titled(&track_scroller, Some("track_view"), "Track List");
+    main_content_stack.add_titled(&playlist_list_scroller, Some("playlists_view"), "Playlists");
 
     // side menu (page switching)
     let page_menu_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
@@ -184,16 +277,25 @@ fn build_ui(app: &Application, player: Rc<Player>) {
 
     // side menu buttons
     let stack_ref = main_content_stack.clone();
+    let stack_ref_2 = main_content_stack.clone();
     let page_button_albums = gtk4::Button::with_label("Albums");
     page_button_albums.set_size_request(80, 40);
     page_button_albums.connect_clicked(move |_| {
         switch_page("albums", &stack_ref);
     });
 
+    let main_content_stack_clone = main_content_stack.clone();
+    let playlists_player = player.clone();
     let page_button_playlists = gtk4::Button::with_label("Playlists");
     page_button_playlists.set_size_request(80, 40);
     page_button_playlists.connect_clicked(move |_| {
-        //switch_page("playlists");
+        switch_page("playlists", &stack_ref_2);
+        collect_playlists(
+            main_content_stack_clone.clone(),
+            playlist_list_container.clone(),
+            DATA_DIR.clone(),
+            playlists_player.clone(),
+        );
     });
 
     let page_button_settings = gtk4::Button::with_label("Settings");
@@ -246,14 +348,15 @@ fn build_ui(app: &Application, player: Rc<Player>) {
             }
         }
     });
-
     let ribbon_progress_bar = gtk4::ProgressBar::new();
+
     ribbon_progress_bar.set_show_text(true);
     ribbon_progress_bar.set_fraction(0.0);
     ribbon_progress_bar.set_text(Some(
         "This is the track name (trust me bro)".to_string().as_str(),
     ));
     ribbon_progress_bar.set_hexpand(true);
+    start_progress_updates(ribbon_progress_bar.clone(), player.clone());
 
     let player_shuffle = player.clone();
     let ribbon_toggle_shuffle = gtk4::Button::with_label("Shuffle");
@@ -282,7 +385,7 @@ fn build_ui(app: &Application, player: Rc<Player>) {
 
     main_column_container.append(&page_menu_container);
     main_column_container.append(&v_div);
-    main_column_container.append(&*main_content_stack); // add the stack
+    main_column_container.append(&*main_content_stack.clone()); // add the stack
 
     rows_container.append(&ribbon);
     rows_container.append(&h_div);
@@ -294,12 +397,14 @@ fn build_ui(app: &Application, player: Rc<Player>) {
             stack.set_visible_child_name("albums_view");
         } else if page == "tracks" {
             stack.set_visible_child_name("track_view");
+        } else if page == "playlists" {
+            stack.set_visible_child_name("playlists_view");
         }
     }
 
     // load teh albums page to start with because otherwise its blank
     collect_album_lib(
-        dirs::home_dir().unwrap().join("Music").as_path(),
+        dirs::audio_dir().unwrap().as_path(),
         &albums_grid,
         track_list_container.clone(),
         main_content_stack.clone(), // pass the stack reference
@@ -356,8 +461,9 @@ fn collect_album_lib(
                 track_list,
                 &track_list_container_ref,
                 &main_content_stack_ref,
-                player_ref.clone(), // Pass player reference down, again because im stupid and
-                                    // forgot to make it a global xD
+                &player_ref.clone(), // Pass player reference down, again because im stupid and
+                // forgot to make it a global xD
+                true,
             );
         });
 
@@ -386,7 +492,8 @@ fn instance_track_list(
     track_list: Vec<Song>,
     track_list_container: &gtk4::ListBox,
     main_content_stack: &gtk4::Stack,
-    player: Rc<Player>, // Added Player
+    player: &Rc<Player>, // Added Player
+    move_window: bool,
 ) {
     while let Some(child) = track_list_container.last_child() {
         track_list_container.remove(&child);
@@ -429,8 +536,6 @@ fn instance_track_list(
             let track_list_ref_3 = track_list_ref_2.clone();
             let index = track_list_ref_2.iter().position(|x| x.title == track.title);
 
-            // let queue_vec = track_list_ref_3[index.unwrap()..track_list_ref_3.len()].to_vec();
-            //
             if let Err(e) = player_ref_button
                 .command_tx
                 .send(PlayerCommand::Play(track_list_ref_3, index.unwrap()))
@@ -442,6 +547,9 @@ fn instance_track_list(
         row.set_child(Some(&make_the_track_button_lol));
         track_list_container.append(&row);
 
+        //main_content_stack.set_visible_child_name("track_view");
+    }
+    if move_window {
         main_content_stack.set_visible_child_name("track_view");
     }
 }
@@ -466,13 +574,22 @@ fn first_image_in_dir(dir: &Path) -> Option<PathBuf> {
 }
 
 fn load_album_info(dir: &Path) -> Result<Album, String> {
-    let file =
-        first_image_in_dir(dir).ok_or_else(|| format!("No album image found in {:?}", dir))?;
-    let album_art_file = gtk4::gio::File::for_path(&file);
+    let image_path = first_image_in_dir(dir);
+    //println!("{:?}", image_path);
+    let album_art: Paintable;
 
-    let album_art = gtk4::gdk::Texture::from_file(&album_art_file)
-        .map_err(|e| format!("couldnt load album art:: {}. your probably just stupid", e))?
-        .upcast::<Paintable>();
+    if image_path.is_none() {
+        album_art = gtk4::gdk::Texture::from_bytes(&Bytes::from_static(MISSING_ALBUM_ICON))
+            .map_err(|e| format!("AAAAAAAAAAAHHHHHHHHHhhh: {}. your probably just stupid", e))?
+            .upcast::<Paintable>();
+    } else {
+        let file = image_path.ok_or_else(|| format!("No album image found in {:?}", dir))?;
+        let album_art_file = gtk4::gio::File::for_path(&file);
+
+        album_art = gtk4::gdk::Texture::from_file(&album_art_file)
+            .map_err(|e| format!("couldnt load album art: {}. your probably just stupid", e))?
+            .upcast::<Paintable>();
+    }
 
     let arbitrary_song_file = fs::read_dir(dir)
         .map_err(|e| format!("couldnt read directory: {}", e))?
@@ -551,4 +668,77 @@ fn get_the_damn_track_list(album_path: &Path) -> Vec<Song> {
     album_contents.sort_by_key(|song| song.track_num);
 
     album_contents
+}
+
+fn collect_playlists(
+    main_content_stack: Rc<gtk4::Stack>,
+    playlists_list_container: Rc<gtk4::ListBox>,
+    DATA_DIR: PathBuf,
+    player: Rc<Player>,
+) {
+    // let example_playlist_format = [
+    //     "hello",
+    //     "/home/verbal/Music/Calamity OST/Fly Of Beelzebub.ogg",
+    //     "/home/verbal/Music/One Shot/OneShot OST (Solstice) - Ghost in the Machine.ogg",
+    //];
+    for entry in fs::read_dir(DATA_DIR.join("Playlists")).unwrap() {
+        println!("{:?}", entry);
+        let playlists_list_container_clone = playlists_list_container.clone();
+        let player_clone = player.clone();
+        let main_content_stack_clone = main_content_stack.clone();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(entry.unwrap().path());
+        let reader = std::io::BufReader::new(file.unwrap());
+        let mut playlist_data: Vec<String> = vec![];
+        for line in reader.lines() {
+            playlist_data.push(line.unwrap());
+        }
+        println!("{:?}", playlist_data);
+
+        let playlist_label = gtk4::Label::new(Some(&playlist_data[0].as_str()));
+        let mut track_list: Vec<Song> = vec![];
+        for song_path in playlist_data {
+            if song_path.chars().nth(0).unwrap() == "/".chars().next().unwrap() {
+                println!("{}", song_path);
+                let song_file = taglib::File::new(song_path.clone().as_str()).unwrap();
+                let tag = song_file.tag().unwrap();
+                let duration = song_file.audioproperties().map(|p| p.length()).unwrap_or(0);
+                let song = Song {
+                    album: tag.album().unwrap_or("Unknown Album".to_string()),
+                    album_artist: tag.artist().unwrap_or("Unknown Artist".to_string()),
+                    path: PathBuf::from(song_path.clone()),
+                    title: tag.title().unwrap_or(
+                        PathBuf::from(song_path)
+                            .file_name()
+                            .unwrap()
+                            .to_os_string()
+                            .into_string()
+                            .unwrap(),
+                    ),
+                    duration: duration,
+                    disk: 0,
+                    track_num: (tag.track().map(|t| t as i16).unwrap_or(0)), // pasted this whole fucking section lol
+                };
+                track_list.push(song);
+            }
+        }
+        let make_it_a_button_again_lmao_xd = gtk4::Button::new();
+        make_it_a_button_again_lmao_xd.set_child(Some(&playlist_label));
+        make_it_a_button_again_lmao_xd.connect_clicked(move |_| {
+            instance_track_list(
+                track_list.clone(),
+                &playlists_list_container_clone,
+                &main_content_stack_clone,
+                &player_clone,
+                false,
+            );
+        });
+        make_it_a_button_again_lmao_xd.set_hexpand(true);
+        let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 3);
+        row.append(&make_it_a_button_again_lmao_xd);
+        row.set_hexpand(true);
+        playlists_list_container.append(&row);
+        main_content_stack.set_visible_child_name("playlists_view");
+    }
 }
