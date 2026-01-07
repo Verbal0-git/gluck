@@ -1,1 +1,0 @@
-cargo:rustc-flags=-l tag_c -l tag
