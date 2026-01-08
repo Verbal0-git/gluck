@@ -129,6 +129,7 @@ fn start_progress_updates(progress_bar: gtk4::ProgressBar, player: Rc<Player>) {
             let progress = get_track_progress();
 
             if duration > 0.0 {
+                println!("pfraction: {} \nduration: {} \nprogress: {}\n", (progress  as f64 / duration), duration, progress);
                 progress_bar.set_fraction(progress  as f64 / duration);
             }
         } else {
