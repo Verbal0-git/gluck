@@ -9,7 +9,10 @@ use std::{
     io::BufRead,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, atomic::{AtomicBool, AtomicI32, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicI32, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -38,13 +41,6 @@ fn get_track_progress() -> i32 {
 }
 
 fn main() {
-    let temp_playlist_ex = [
-        "hello".to_string(),
-        "/home/verbal/Music/Calamity OST/Fly Of Beelzebub.ogg".to_string(),
-        "/home/verbal/Music/Deltarune/11. Cyber Battle (Solo) (DELTARUNE Chapter 2 Soundtrack) - Toby Fox.ogg".to_string(),
-    ];
-    let temp_content = temp_playlist_ex.join("\n");
-
     let _ = std::fs::create_dir_all(
         dirs::data_dir()
             .unwrap()
@@ -53,27 +49,6 @@ fn main() {
             .join("Playlists"),
     );
 
-
-    let _ = std::fs::File::create(
-        dirs::data_dir()
-            .unwrap()
-            .as_path()
-            .join("Gluck")
-            .join("Playlists")
-            .join(temp_playlist_ex[0].clone()),
-    );
-    let hh = std::fs::write(
-        dirs::data_dir()
-            .unwrap()
-            .as_path()
-            .join("Gluck")
-            .join("Playlists")
-            .join(temp_playlist_ex[0].clone()),
-        temp_content,
-    );
-    if let Err(e) = hh {
-        eprint!("{}", e);
-    };
     // my old enemy, touples
     let (tx, rx) = unbounded::<PlayerCommand>();
 
@@ -117,7 +92,7 @@ pub struct Player {
 }
 
 fn start_progress_updates(progress_bar: gtk4::ProgressBar, player: Rc<Player>) {
-    timeout_add_local(Duration::from_millis(750), move || {
+    timeout_add_local(Duration::from_millis(1000), move || {
         let (reply_tx, reply_rx) = bounded(1);
 
         let _ = player
@@ -129,11 +104,11 @@ fn start_progress_updates(progress_bar: gtk4::ProgressBar, player: Rc<Player>) {
             let progress = get_track_progress();
 
             if duration > 0.0 {
-                println!("pfraction: {} \nduration: {} \nprogress: {}\n", (progress  as f64 / duration), duration, progress);
-                progress_bar.set_fraction(progress  as f64 / duration);
+                progress_bar.set_fraction((progress as f64) / 100.0);
+                //println!("{}", (progress as f64) / 100.0);
             }
         } else {
-            println!("fucked");
+            eprintln!("fucked");
         }
 
         glib::ControlFlow::Continue // keep running
@@ -141,9 +116,10 @@ fn start_progress_updates(progress_bar: gtk4::ProgressBar, player: Rc<Player>) {
 }
 
 fn update_track_progress(mpv: &Arc<Mpv>) {
-    while mpv.get_property::<f64>("duration").unwrap_or(0.0) != (mpv.get_time_ns() as f64) / 1_000_000_000.0 {
-        // println!("progress set as {}", mpv.get_time_us().to_string());
-        set_track_progress((mpv.get_time_ns() / 1_000_000_000) as i32);
+    while mpv.get_property::<f64>("duration").unwrap_or(0.0)
+        != (mpv.get_time_ns() as f64) / 1_000_000_000.0
+    {
+        set_track_progress(mpv.get_property::<f64>("percent-pos").unwrap_or(0.0) as i32);
     }
 }
 
@@ -178,12 +154,12 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
                         mpv.command("loadfile", &[&path]).ok();
                     } else {
                         mpv.command("loadfile", &[&path, "append"]).ok();
-                    }
+                    };
                 }
                 let mpv_clone = mpv.clone();
-                    thread::spawn(move || {
-                        update_track_progress(&mpv_clone);
-                    });
+                thread::spawn(move || {
+                    update_track_progress(&mpv_clone);
+                });
 
                 // unpause it because apparently its paused by default
                 mpv.set_property("pause", false).ok();
@@ -245,7 +221,8 @@ pub struct Album {
 fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
     let rows_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
-    // the actuall stuff on screen, probably needed
+    // the actuall stuff on screen, probably needed.
+    // its a stack now because i cba clearing teh screen every time
     let main_content_stack = Rc::new(gtk4::Stack::new());
     main_content_stack.set_vexpand(true);
     main_content_stack.set_hexpand(true);
@@ -404,7 +381,6 @@ fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
     rows_container.append(&main_column_container);
 
     fn switch_page(page: &str, stack: &gtk4::Stack) {
-        println!("Switching to: {}", page);
         if page == "albums" {
             stack.set_visible_child_name("albums_view");
         } else if page == "tracks" {
@@ -419,8 +395,8 @@ fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
         dirs::audio_dir().unwrap().as_path(),
         &albums_grid,
         track_list_container.clone(),
-        main_content_stack.clone(), // pass the stack reference
-        player.clone(),             // Pass player reference
+        main_content_stack.clone(),
+        player.clone(),
     );
     switch_page("albums", &main_content_stack);
 
@@ -552,7 +528,7 @@ fn instance_track_list(
                 .command_tx
                 .send(PlayerCommand::Play(track_list_ref_3, index.unwrap()))
             {
-                eprintln!("Failed to send Play command: {}", e);
+                eprintln!("failed to send Play command: {}", e);
             };
         });
 
@@ -688,11 +664,10 @@ fn collect_playlists(
     data_dir: PathBuf,
     player: Rc<Player>,
 ) {
-    // let example_playlist_format = [
-    //     "hello",
-    //     "/home/verbal/Music/Calamity OST/Fly Of Beelzebub.ogg",
-    //     "/home/verbal/Music/One Shot/OneShot OST (Solstice) - Ghost in the Machine.ogg",
-    //];
+    while let Some(child) = playlists_list_container.last_child() {
+        playlists_list_container.remove(&child);
+    }
+
     for entry in fs::read_dir(data_dir.join("Playlists")).unwrap() {
         let playlists_list_container_clone = playlists_list_container.clone();
         let player_clone = player.clone();
@@ -706,11 +681,10 @@ fn collect_playlists(
             playlist_data.push(line.unwrap());
         }
 
-        let playlist_label = gtk4::Label::new(Some(&playlist_data[0].as_str()));
+        let playlist_label = gtk4::Label::new(Some(playlist_data[0].as_str()));
         let mut track_list: Vec<Song> = vec![];
         for song_path in playlist_data {
-            if song_path.chars().nth(0).unwrap() == "/".chars().next().unwrap() {
-                println!("{}", song_path);
+            if song_path.chars().next().unwrap() == "/".chars().next().unwrap() {
                 let song_file = taglib::File::new(song_path.clone().as_str()).unwrap();
                 let tag = song_file.tag().unwrap();
                 let duration = song_file.audioproperties().map(|p| p.length()).unwrap_or(0);
