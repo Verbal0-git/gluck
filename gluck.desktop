@@ -1,0 +1,14 @@
+[Desktop Entry]
+Categories=Multimedia;Application;
+Comment=The best gluck that ever glucked (probably already outdated)
+Exec=/usr/local/bin/gluck
+Icon=youtube-music-desktop
+Name=Gluck
+NoDisplay=false
+PrefersNonDefaultGPU=false
+StartupNotify=true
+Terminal=false
+TerminalOptions=
+Type=Application
+X-KDE-SubstituteUID=false
+X-KDE-Username=

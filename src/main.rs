@@ -73,6 +73,8 @@ fn main() {
         )
     });
 
+    app.set_accels_for_action("app.forward", &["space"]);
+
     app.run();
 }
 
@@ -104,8 +106,13 @@ fn start_progress_updates(progress_bar: gtk4::ProgressBar, player: Rc<Player>) {
             let progress = get_track_progress();
 
             if duration > 0.0 {
-                progress_bar.set_fraction((progress as f64) / 100.0);
-                //println!("{}", (progress as f64) / 100.0);
+                progress_bar.set_fraction((progress as f64) / duration);
+                println!(
+                    "progress: {}\nduration: {}\n   fraction: {}",
+                    progress,
+                    duration,
+                    (progress as f64) / duration
+                );
             }
         } else {
             eprintln!("fucked");
@@ -119,7 +126,7 @@ fn update_track_progress(mpv: &Arc<Mpv>) {
     while mpv.get_property::<f64>("duration").unwrap_or(0.0)
         != (mpv.get_time_ns() as f64) / 1_000_000_000.0
     {
-        set_track_progress(mpv.get_property::<f64>("percent-pos").unwrap_or(0.0) as i32);
+        set_track_progress(mpv.get_property::<f64>("time-pos").unwrap_or(0.0) as i32);
     }
 }
 
