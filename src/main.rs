@@ -93,7 +93,11 @@ pub struct Player {
     command_tx: Sender<PlayerCommand>,
 }
 
-fn start_progress_updates(progress_bar: gtk4::ProgressBar, player: Rc<Player>) {
+fn start_progress_updates(
+    progress_bar: gtk4::ProgressBar,
+    player: Rc<Player>,
+    progress_label: gtk4::Label,
+) {
     timeout_add_local(Duration::from_millis(1000), move || {
         let (reply_tx, reply_rx) = bounded(1);
 
@@ -107,12 +111,13 @@ fn start_progress_updates(progress_bar: gtk4::ProgressBar, player: Rc<Player>) {
 
             if duration > 0.0 {
                 progress_bar.set_fraction((progress as f64) / duration);
-                println!(
-                    "progress: {}\nduration: {}\n   fraction: {}",
-                    progress,
-                    duration,
-                    (progress as f64) / duration
-                );
+                progress_label.set_label(&format_progress_label(progress, duration).as_str());
+                //println!(
+                //    "progress: {}\nduration: {}\n   fraction: {}",
+                //    progress,
+                //    duration,
+                //    (progress as f64) / duration
+                //);
             }
         } else {
             eprintln!("fucked");
@@ -120,6 +125,50 @@ fn start_progress_updates(progress_bar: gtk4::ProgressBar, player: Rc<Player>) {
 
         glib::ControlFlow::Continue // keep running
     });
+}
+
+fn format_progress_label(progress: i32, duration: f64) -> String {
+    let progress_min = progress / 60;
+    let progress_sec = progress % 60;
+
+    let duration_min = (duration / 60.0) as i32;
+    let duration_sec = (duration % 60.0) as i32;
+
+    let progress_min_text: String;
+    if progress_min < 10 {
+        progress_min_text = format!("0{}", progress_min);
+    } else {
+        progress_min_text = progress_min.to_string();
+    }
+
+    let progress_sec_text: String;
+    if progress_sec < 10 {
+        progress_sec_text = format!("0{}", progress_sec);
+    } else {
+        progress_sec_text = progress_sec.to_string();
+    }
+
+    let duration_min_text: String;
+    if duration_min < 10 {
+        duration_min_text = format!("0{}", duration_min);
+    } else {
+        duration_min_text = duration_min.to_string();
+    }
+
+    let duration_sec_text: String;
+
+    if duration_sec < 10 {
+        duration_sec_text = format!("0{}", duration_sec);
+    } else {
+        duration_sec_text = duration_sec.to_string();
+    }
+
+    let display_text = format!(
+        "{}:{} / {}:{} ",
+        progress_min_text, progress_sec_text, duration_min_text, duration_sec_text
+    );
+    // println!("{}", display_text);
+    display_text
 }
 
 fn update_track_progress(mpv: &Arc<Mpv>) {
@@ -141,8 +190,8 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
                 mpv.command("stop", &[]).ok();
                 mpv.command("playlist-clear", &[]).ok();
 
-                let mut queue_vec = vec![];
-                println!("{:?}", queue_vec);
+                let mut queue_vec: Vec<Song>;
+                //println!("{:?}", queue_vec);
 
                 if get_shuffled() {
                     queue_vec = queue.clone();
@@ -352,7 +401,14 @@ fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
         "This is the track name (trust me bro)".to_string().as_str(),
     ));
     ribbon_progress_bar.set_hexpand(true);
-    start_progress_updates(ribbon_progress_bar.clone(), player.clone());
+
+    let ribbon_label_progress = gtk4::Label::new(Some("00:00 / 00:00 "));
+
+    start_progress_updates(
+        ribbon_progress_bar.clone(),
+        player.clone(),
+        ribbon_label_progress.clone(),
+    );
 
     let player_shuffle = player.clone();
     let ribbon_toggle_shuffle = gtk4::Button::with_label("Shuffle");
@@ -365,8 +421,6 @@ fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
             eprintln!("somit with shuffle: {}", e)
         }
     });
-
-    let ribbon_label_progress = gtk4::Label::new(Some("00:00 / 00:00"));
 
     ribbon.append(&ribbon_button_pause);
     ribbon.append(&ribbon_button_stop);
@@ -381,7 +435,8 @@ fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
 
     main_column_container.append(&page_menu_container);
     main_column_container.append(&v_div);
-    main_column_container.append(&*main_content_stack.clone()); // add the stack
+    main_column_container.append(&*main_content_stack.clone()); // why the FUCK does this
+    // need an asterisk
 
     rows_container.append(&ribbon);
     rows_container.append(&h_div);
@@ -445,9 +500,9 @@ fn collect_album_lib(
 
         let track_list_container_ref = track_list_container.clone();
         let main_content_stack_ref = main_content_stack.clone();
-        let player_ref = player.clone(); // Clone player for the closure
+        let player_ref = player.clone();
 
-        let album_dir = album.dir.clone(); // Clone the path for the closure
+        let album_dir = album.dir.clone(); // yoink ze path
 
         make_the_album_a_button_because_im_dumb.connect_clicked(move |_| {
             // actually fetch teh track list
