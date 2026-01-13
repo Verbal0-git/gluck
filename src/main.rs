@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, Ordering},
     },
     thread,
@@ -32,6 +32,18 @@ static TRACK_PROGRESS: AtomicI32 = AtomicI32::new(0);
 
 fn set_track_progress(value: i32) {
     TRACK_PROGRESS.store(value, Ordering::SeqCst);
+}
+
+static CURRENT_TRACK_NAME: Mutex<String> = Mutex::new(String::new());
+
+fn set_cuurent_track_name(value: &str) {
+    let mut global_string = CURRENT_TRACK_NAME.lock().unwrap();
+    *global_string = value.to_string();
+}
+
+fn get_current_track_name() -> String {
+    let global_string = CURRENT_TRACK_NAME.lock().unwrap();
+    global_string.clone()
 }
 
 fn get_track_progress() -> i32 {
@@ -111,6 +123,7 @@ fn start_progress_updates(
 
             if duration > 0.0 {
                 progress_bar.set_fraction((progress as f64) / duration);
+                progress_bar.set_text(Some(get_current_track_name().as_str()));
                 progress_label.set_label(&format_progress_label(progress, duration).as_str());
                 //println!(
                 //    "progress: {}\nduration: {}\n   fraction: {}",
@@ -176,6 +189,18 @@ fn update_track_progress(mpv: &Arc<Mpv>) {
         != (mpv.get_time_ns() as f64) / 1_000_000_000.0
     {
         set_track_progress(mpv.get_property::<f64>("time-pos").unwrap_or(0.0) as i32);
+        let current_path = mpv.get_property::<String>("path").unwrap();
+        let song_file = taglib::File::new(current_path.as_str()).unwrap();
+        let tag = song_file.tag().unwrap();
+        let title = tag.title().unwrap_or(
+            Path::new(current_path.as_str())
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        );
+        set_cuurent_track_name(&title);
     }
 }
 
@@ -479,7 +504,7 @@ fn collect_album_lib(
     albums_grid: &FlowBox,
     track_list_container: Rc<gtk4::ListBox>,
     main_content_stack: Rc<gtk4::Stack>,
-    player: Rc<Player>, // Added Player
+    player: Rc<Player>,
 ) {
     let mut lib: Vec<Album> = Vec::new();
 
@@ -542,7 +567,7 @@ fn instance_track_list(
     track_list: Vec<Song>,
     track_list_container: &gtk4::ListBox,
     main_content_stack: &gtk4::Stack,
-    player: &Rc<Player>, // Added Player
+    player: &Rc<Player>,
     move_window: bool,
 ) {
     while let Some(child) = track_list_container.last_child() {
