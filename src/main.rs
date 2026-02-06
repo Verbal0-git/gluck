@@ -2,19 +2,20 @@ use core::f64;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use glib::{Bytes, timeout_add_local};
 use gtk4::{Application, ApplicationWindow, FlowBox, gdk::Paintable, prelude::*};
-use libmpv2::Mpv;
-use rand::{rng, seq::SliceRandom};
+use libmpv2::{Mpv, events::Event};
+use rand::seq::SliceRandom;
 use std::{
+    collections::VecDeque,
     fs,
     io::BufRead,
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
-        Arc, Mutex,
+        Mutex,
         atomic::{AtomicBool, AtomicI32, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 static IS_SHUFFLED: AtomicBool = AtomicBool::new(false);
@@ -90,7 +91,7 @@ fn main() {
     app.run();
 }
 
-// Command the ui can send to the audio thread
+// Commands the ui can send to the audio thread
 pub enum PlayerCommand {
     Play(Vec<Song>, usize),
     Pause,
@@ -122,9 +123,16 @@ fn start_progress_updates(
             let progress = get_track_progress();
 
             if duration > 0.0 {
-                progress_bar.set_fraction((progress as f64) / duration);
+                progress_bar.set_fraction(((progress as f64) / duration).clamp(0.0, 1.0));
                 progress_bar.set_text(Some(get_current_track_name().as_str()));
-                progress_label.set_label(&format_progress_label(progress, duration).as_str());
+                progress_label.set_label(
+                    format!(
+                        "{} / {}",
+                        format_progress_label(progress),
+                        format_progress_label(duration as i32)
+                    )
+                    .as_str(),
+                );
                 //println!(
                 //    "progress: {}\nduration: {}\n   fraction: {}",
                 //    progress,
@@ -140,143 +148,149 @@ fn start_progress_updates(
     });
 }
 
-fn format_progress_label(progress: i32, duration: f64) -> String {
-    let progress_min = progress / 60;
-    let progress_sec = progress % 60;
+fn format_progress_label(time: i32) -> String {
+    let progress_min = time / 60;
+    let progress_sec = time % 60;
 
-    let duration_min = (duration / 60.0) as i32;
-    let duration_sec = (duration % 60.0) as i32;
-
-    let progress_min_text: String;
-    if progress_min < 10 {
-        progress_min_text = format!("0{}", progress_min);
+    let progress_min_text = if progress_min < 10 {
+        format!("0{}", progress_min)
     } else {
-        progress_min_text = progress_min.to_string();
-    }
+        progress_min.to_string()
+    };
 
-    let progress_sec_text: String;
-    if progress_sec < 10 {
-        progress_sec_text = format!("0{}", progress_sec);
+    let progress_sec_text = if progress_sec < 10 {
+        format!("0{}", progress_sec)
     } else {
-        progress_sec_text = progress_sec.to_string();
-    }
+        progress_sec.to_string()
+    };
 
-    let duration_min_text: String;
-    if duration_min < 10 {
-        duration_min_text = format!("0{}", duration_min);
-    } else {
-        duration_min_text = duration_min.to_string();
-    }
-
-    let duration_sec_text: String;
-
-    if duration_sec < 10 {
-        duration_sec_text = format!("0{}", duration_sec);
-    } else {
-        duration_sec_text = duration_sec.to_string();
-    }
-
-    let display_text = format!(
-        "{}:{} / {}:{} ",
-        progress_min_text, progress_sec_text, duration_min_text, duration_sec_text
-    );
+    let display_text = format!("{}:{}", progress_min_text, progress_sec_text);
     // println!("{}", display_text);
     display_text
 }
 
-fn update_track_progress(mpv: &Arc<Mpv>) {
-    while mpv.get_property::<f64>("duration").unwrap_or(0.0)
-        != (mpv.get_time_ns() as f64) / 1_000_000_000.0
+fn update_track_progress(mpv: &Mpv) {
+    let pos = mpv.get_property::<f64>("time-pos").unwrap_or(0.0);
+
+    set_track_progress(pos as i32);
+
+    // path may not exist yet
+    let path = match mpv.get_property::<String>("path") {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    if let Ok(song_file) = taglib::File::new(&path)
+        && let Ok(tag) = song_file.tag()
     {
-        set_track_progress(mpv.get_property::<f64>("time-pos").unwrap_or(0.0) as i32);
-        let current_path = mpv.get_property::<String>("path").unwrap();
-        let song_file = taglib::File::new(current_path.as_str()).unwrap();
-        let tag = song_file.tag().unwrap();
-        let title = tag.title().unwrap_or(
-            Path::new(current_path.as_str())
+        let title = tag.title().unwrap_or_else(|| {
+            Path::new(&path)
                 .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_owned(),
-        );
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+                .to_string()
+        });
         set_cuurent_track_name(&title);
     }
 }
 
 fn audio_thread(command_rx: Receiver<PlayerCommand>) {
-    let mpv = Arc::new(Mpv::new().expect("Cant mpv, try harder next time"));
+    // mpv must be owned mutably by ONE thread
+    let mut mpv = Mpv::new().expect("cant mpv, try harder next time");
 
+    // mpv config because bad and slow
+    mpv.set_property("keep-open", false).ok();
+    mpv.set_property("audio-display", false).ok();
+    mpv.set_property("cache", false).ok();
+    mpv.set_property("force-window", false).ok();
     mpv.set_property("pause", true).ok();
 
-    while let Ok(command) = command_rx.recv() {
-        match command {
-            PlayerCommand::Play(queue, index) => {
-                mpv.command("stop", &[]).ok();
-                mpv.command("playlist-clear", &[]).ok();
+    let mut queue: VecDeque<Song> = VecDeque::new();
+    let mut last_progress = Instant::now(); // i dont even know what an instant is
 
-                let mut queue_vec: Vec<Song>;
-                //println!("{:?}", queue_vec);
+    loop {
+        // rc handeler
+        while let Ok(command) = command_rx.try_recv() {
+            match command {
+                PlayerCommand::Play(in_queue, index) => {
+                    queue.clear();
 
-                if get_shuffled() {
-                    queue_vec = queue.clone();
-                    let first = queue_vec[index].clone();
-                    let mut rng = rng();
-                    queue_vec.shuffle(&mut rng);
-                    queue_vec.insert(0, first);
-                } else {
-                    queue_vec = queue[index..queue.len()].to_vec();
+                    let mut new_queue = if get_shuffled() {
+                        let mut q = in_queue.clone();
+                        let first = q.remove(index);
+                        let mut rng = rand::rng();
+                        q.shuffle(&mut rng);
+                        q.insert(0, first);
+                        println!("{:?}", q);
+                        q
+                    } else {
+                        in_queue[index..].to_vec()
+                    };
+
+                    queue = new_queue.drain(..).collect();
+
+                    if let Some(song) = queue.front() {
+                        let path = song.path.to_string_lossy();
+                        mpv.command("loadfile", &[&path]).ok();
+                        mpv.set_property("pause", false).ok();
+                    }
                 }
 
-                for (i, song) in queue_vec.iter().enumerate() {
-                    let path = song.path.to_string_lossy().to_string();
-                    println!("Added file: {} to queue", song.title);
-                    if i == 0 {
+                PlayerCommand::Pause => {
+                    mpv.set_property("pause", true).ok();
+                }
+
+                PlayerCommand::Resume => {
+                    mpv.set_property("pause", false).ok();
+                }
+
+                PlayerCommand::Forward => {
+                    queue.pop_front();
+                    if let Some(song) = queue.front() {
+                        let path = song.path.to_string_lossy();
                         mpv.command("loadfile", &[&path]).ok();
                     } else {
-                        mpv.command("loadfile", &[&path, "append"]).ok();
-                    };
+                        mpv.command("stop", &[]).ok();
+                    }
                 }
-                let mpv_clone = mpv.clone();
-                thread::spawn(move || {
-                    update_track_progress(&mpv_clone);
-                });
 
-                // unpause it because apparently its paused by default
-                mpv.set_property("pause", false).ok();
+                PlayerCommand::Stop => {
+                    queue.clear();
+                    mpv.command("stop", &[]).ok();
+                }
+
+                PlayerCommand::TogggleShuffle => {
+                    set_shuffled(!get_shuffled());
+                }
+
+                PlayerCommand::GetTrackDuration(reply_tx) => {
+                    let duration = mpv.get_property::<f64>("duration").unwrap_or(0.0);
+                    let _ = reply_tx.send(duration);
+                }
             }
+        }
 
-            PlayerCommand::Pause => {
-                mpv.set_property("pause", true).ok();
-            }
+        // fuckass mpv event hand holder
+        if let Some(Ok(Event::EndFile(it_ended_normally))) = mpv.wait_event(0.05) {
+            if it_ended_normally == 0 {
+                // why does it not return true like wtf
+                queue.pop_front();
 
-            PlayerCommand::Resume => {
-                mpv.set_property("pause", false).ok();
-            }
-
-            PlayerCommand::Forward => {
-                mpv.command("playlist-next", &[]).ok();
-            }
-
-            PlayerCommand::Stop => {
-                mpv.command("stop", &[]).ok();
-            }
-
-            PlayerCommand::TogggleShuffle => {
-                if get_shuffled() {
-                    set_shuffled(false);
-                    println!("unshuffled");
+                if let Some(song) = queue.front() {
+                    let path = song.path.to_string_lossy();
+                    mpv.command("loadfile", &[&path]).ok();
                 } else {
-                    set_shuffled(true);
-                    println!("shuffled");
+                    mpv.command("stop", &[]).ok();
                 }
+            } else {
+                // do absolutley nothing lol
             }
+        }
 
-            PlayerCommand::GetTrackDuration(reply_tx) => {
-                let duration = mpv.get_property::<f64>("duration").unwrap_or(0.0);
-
-                let _ = reply_tx.send(duration);
-            }
+        // make it nit run constantly
+        if last_progress.elapsed() >= Duration::from_millis(250) {
+            update_track_progress(&mpv);
+            last_progress = Instant::now();
         }
     }
 }
@@ -299,14 +313,26 @@ pub struct Album {
     pub album_art: gtk4::gdk::Paintable,
 }
 
+static ALLOWED_AUDIO_FORMATS: &[&str] = &["mp3", "ogg", "flac", "wav"];
+
+fn create_page_scroller(child: &impl IsA<gtk4::Widget>) -> gtk4::ScrolledWindow {
+    let scroller = gtk4::ScrolledWindow::new();
+    scroller.set_child(Some(child));
+    make_expandable(&scroller, true, true);
+    scroller
+}
+
+fn make_expandable(widget: &impl IsA<gtk4::Widget>, vert: bool, hore: bool) {
+    widget.set_vexpand(vert);
+    widget.set_hexpand(hore);
+}
+
 fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
     let rows_container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
     // the actuall stuff on screen, probably needed.
-    // its a stack now because i cba clearing teh screen every time
     let main_content_stack = Rc::new(gtk4::Stack::new());
-    main_content_stack.set_vexpand(true);
-    main_content_stack.set_hexpand(true);
+    make_expandable(&*main_content_stack, true, true);
 
     let albums_grid = Rc::new(gtk4::FlowBox::new());
     albums_grid.set_valign(gtk4::Align::Start);
@@ -314,28 +340,19 @@ fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
     albums_grid.set_row_spacing(2);
     albums_grid.set_column_spacing(2);
 
-    let albums_scroller = gtk4::ScrolledWindow::new();
-    albums_scroller.set_child(Some(&*albums_grid));
-    albums_scroller.set_vexpand(true);
-    albums_scroller.set_hexpand(true);
+    let albums_scroller = create_page_scroller(&*albums_grid);
 
     let playlist_list_container = Rc::new(gtk4::ListBox::new());
-    let playlist_list_scroller = gtk4::ScrolledWindow::new();
-    playlist_list_scroller.set_child(Some(&*playlist_list_container));
-    playlist_list_scroller.set_vexpand(true);
-    playlist_list_scroller.set_hexpand(true);
+    let playlist_list_scroller = create_page_scroller(&*playlist_list_container);
 
     // add albums view to ui stack
     main_content_stack.add_titled(&albums_scroller, Some("albums_view"), "Albums");
 
     let track_list_container = Rc::new(gtk4::ListBox::new());
-    let track_scroller = gtk4::ScrolledWindow::new();
-    track_scroller.set_child(Some(&*track_list_container));
-    track_scroller.set_vexpand(true);
-    track_scroller.set_hexpand(true);
+    let track_list_scroller = create_page_scroller(&*track_list_container);
 
     // add track list to ui stack
-    main_content_stack.add_titled(&track_scroller, Some("track_view"), "Track List");
+    main_content_stack.add_titled(&track_list_scroller, Some("track_view"), "Track List");
     main_content_stack.add_titled(&playlist_list_scroller, Some("playlists_view"), "Playlists");
 
     // side menu (page switching)
@@ -372,15 +389,6 @@ fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
 
     let page_button_settings = gtk4::Button::with_label("Settings");
     page_button_settings.set_size_request(80, 40);
-    page_button_settings.connect_clicked(move |_| {
-        //switch_page("settings");
-    });
-
-    let page_button_track_list = gtk4::Button::with_label("Tracks");
-    page_button_track_list.set_size_request(80, 40);
-    page_button_track_list.connect_clicked(move |_| {
-        //switch_page("tracks");
-    });
 
     let ribbon = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
 
@@ -392,10 +400,8 @@ fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
             if let Err(e) = player_pause.command_tx.send(PlayerCommand::Pause) {
                 eprintln!("Failed to send Pause command: {}", e);
             }
-        } else {
-            if let Err(e) = player_pause.command_tx.send(PlayerCommand::Resume) {
-                eprintln!("Failed to send Resume command: {}", e);
-            }
+        } else if let Err(e) = player_pause.command_tx.send(PlayerCommand::Resume) {
+            eprintln!("Failed to send Resume command: {}", e);
         }
     });
 
@@ -462,6 +468,8 @@ fn build_ui(app: &Application, player: Rc<Player>, data_dir: PathBuf) {
     main_column_container.append(&v_div);
     main_column_container.append(&*main_content_stack.clone()); // why the FUCK does this
     // need an asterisk
+    //
+    // later me: i now know why this needs an asterisk
 
     rows_container.append(&ribbon);
     rows_container.append(&h_div);
@@ -581,9 +589,8 @@ fn instance_track_list(
         let make_the_track_button_lol = gtk4::Button::new();
         let track_container = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
 
-        let label_duration = gtk4::Label::new(Some(
-            format!("{}:{}", track.duration / 60, track.duration % 60).as_str(),
-        ));
+        let label_duration =
+            gtk4::Label::new(Some(format_progress_label(track.duration as i32).as_str()));
         label_duration.set_size_request(40, 20);
         label_duration.set_margin_end(15);
         let label_title = gtk4::Label::new(Some(&track.title));
@@ -650,7 +657,6 @@ fn first_image_in_dir(dir: &Path) -> Option<PathBuf> {
 
 fn load_album_info(dir: &Path) -> Result<Album, String> {
     let image_path = first_image_in_dir(dir);
-    //println!("{:?}", image_path);
     let album_art: Paintable;
 
     if image_path.is_none() {
@@ -672,8 +678,9 @@ fn load_album_info(dir: &Path) -> Result<Album, String> {
         .find_map(|entry| {
             let path = entry.path();
             let ext = path.extension()?.to_str()?.to_lowercase();
-            if matches!(ext.as_str(), "ogg" | "mp3" | "flac") {
-                // if this doesnt support flac henery will murder me
+            if ALLOWED_AUDIO_FORMATS.contains(&ext.as_str()) {
+                // flac doesnt actually work xD
+                // IT DOES NOW
                 Some(path)
             } else {
                 None
@@ -716,7 +723,7 @@ fn get_the_damn_track_list(album_path: &Path) -> Vec<Song> {
     for entry in fs::read_dir(album_path).unwrap() {
         let path = entry.unwrap().path();
         let ext = path.extension().unwrap();
-        if ext == "mp3" || ext == "ogg" {
+        if ALLOWED_AUDIO_FORMATS.contains(&ext.to_str().unwrap().to_lowercase().as_str()) {
             let song_file = taglib::File::new(path.to_str().unwrap()).unwrap();
             let tag = song_file.tag().unwrap();
             let duration = song_file.audioproperties().map(|p| p.length()).unwrap_or(0);

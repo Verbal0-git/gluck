@@ -16,5 +16,5 @@ libmpv2 = "5.0.2"
 include_assets = "1.0.0"
 
 [dependencies.gtk4]
-version = "0.10.2"
+version = "0.10.3"
 features = ["v4_10"]
