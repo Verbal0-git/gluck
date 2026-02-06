@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, Ordering},
     },
     thread,
@@ -49,7 +49,6 @@ fn get_current_track_name() -> String {
 
 fn get_track_progress() -> i32 {
     let progress: i32 = TRACK_PROGRESS.load(Ordering::SeqCst);
-    //println!("tarck progress retrieved as: {}", progress);
     progress
 }
 
@@ -93,7 +92,7 @@ fn main() {
 
 // Commands the ui can send to the audio thread
 pub enum PlayerCommand {
-    Play(Vec<Song>, usize),
+    Play(Arc<Vec<Song>>, usize),
     Pause,
     Resume,
     Stop,
@@ -133,12 +132,6 @@ fn start_progress_updates(
                     )
                     .as_str(),
                 );
-                //println!(
-                //    "progress: {}\nduration: {}\n   fraction: {}",
-                //    progress,
-                //    duration,
-                //    (progress as f64) / duration
-                //);
             }
         } else {
             eprintln!("fucked");
@@ -165,7 +158,6 @@ fn format_progress_label(time: i32) -> String {
     };
 
     let display_text = format!("{}:{}", progress_min_text, progress_sec_text);
-    // println!("{}", display_text);
     display_text
 }
 
@@ -204,6 +196,7 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
     mpv.set_property("cache", false).ok();
     mpv.set_property("force-window", false).ok();
     mpv.set_property("pause", true).ok();
+    mpv.set_property("vid", "no").ok();
 
     let mut queue: VecDeque<Song> = VecDeque::new();
     let mut last_progress = Instant::now(); // i dont even know what an instant is
@@ -212,11 +205,11 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
         // rc handeler
         while let Ok(command) = command_rx.try_recv() {
             match command {
-                PlayerCommand::Play(in_queue, index) => {
+                PlayerCommand::Play(tracks, index) => {
                     queue.clear();
 
                     let mut new_queue = if get_shuffled() {
-                        let mut q = in_queue.clone();
+                        let mut q: Vec<Song> = tracks.iter().cloned().collect();
                         let first = q.remove(index);
                         let mut rng = rand::rng();
                         q.shuffle(&mut rng);
@@ -224,7 +217,7 @@ fn audio_thread(command_rx: Receiver<PlayerCommand>) {
                         println!("{:?}", q);
                         q
                     } else {
-                        in_queue[index..].to_vec()
+                        tracks[index..].to_vec()
                     };
 
                     queue = new_queue.drain(..).collect();
@@ -617,10 +610,10 @@ fn instance_track_list(
             let track_list_ref_2 = button_track_list_ref.clone();
             let track_list_ref_3 = track_list_ref_2.clone();
             let index = track_list_ref_2.iter().position(|x| x.title == track.title);
-
+            let tracks = Arc::new(track_list_ref_3);
             if let Err(e) = player_ref_button
                 .command_tx
-                .send(PlayerCommand::Play(track_list_ref_3, index.unwrap()))
+                .send(PlayerCommand::Play(tracks.clone(), index.unwrap()))
             {
                 eprintln!("failed to send Play command: {}", e);
             };
